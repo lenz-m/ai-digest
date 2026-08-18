@@ -239,7 +239,9 @@ def test_parse_score_results_builds_scored_items():
     scored = parse_score_results(requests, survivors, results)
     assert len(scored) == 1
     assert scored[0].org_score == 80
-    assert scored[0].title == "Story"
+    # VALID_RESPONSE includes clean_title; display title prefers it over raw scrape
+    assert scored[0].title == VALID_RESPONSE["clean_title"]
+    assert scored[0].raw_title == "Story"
 
 
 def test_parse_score_results_drops_item_on_missing_result():
@@ -274,4 +276,5 @@ def test_parse_score_results_partial_batch_keeps_the_good_ones():
     }
     scored = parse_score_results(requests, survivors, results)
     assert len(scored) == 1
-    assert scored[0].title == "A"
+    # This test is about partial-batch survival, not title cleanup — match on url
+    assert scored[0].url == "https://x.com/a"
