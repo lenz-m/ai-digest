@@ -5,11 +5,6 @@ Obsidian vault archive (secondary). Full design rationale was worked out in
 chat before any code — see the summary below for the decisions that matter
 for future changes.
 
-**No git in this project.** Version control is handled by the user, outside
-of any agent session. Do not run `git init`/`add`/`commit`, and note that
-`uv init` creates a `.git` by default — if re-running `uv init` for any
-reason, `rm -rf .git` immediately after.
-
 ## Architecture (decided, don't relitigate)
 
 - **Raspberry Pi** (always on) runs the actual pipeline: fetch → dedupe →

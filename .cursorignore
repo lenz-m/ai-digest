@@ -1,0 +1,6 @@
+.env
+.env.*
+logs/
+outbox/
+.venv/
+cache/sources_last_good.tsv
