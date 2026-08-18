@@ -1,0 +1,38 @@
+{
+  "AI Courses": {
+    "detail": "learn.deeplearning.ai is a login-gated course catalog, not an articles/news page -- confirmed across two real fetches, both returning account-chrome links (Reset Workspace Guide, Forgot password?, Sign in here!). Not a scraping bug to fix; the content type itself doesn't fit this pipeline.",
+    "detected_at": "2026-07-16T21:05:48.376838+00:00",
+    "human_override": true,
+    "strategy": "unsupported"
+  },
+  "Gartner Insights": {
+    "detail": "Listing scrape returned zero same-domain links -- page appears entirely JS-rendered, likely also bot-detection",
+    "detected_at": "2026-07-16T21:05:58.797436+00:00",
+    "human_override": true,
+    "strategy": "unsupported"
+  },
+  "TechMeme": {
+    "detail": "https://www.techmeme.com/feed.xml",
+    "detected_at": "2026-07-16T21:04:28.250632+00:00",
+    "human_override": true,
+    "strategy": "rss"
+  },
+  "WSJ CIO Journal": {
+    "detail": "JS-rendered page, static fetch returned only CSS/chrome text, no article content reachable without executing JS",
+    "detected_at": "2026-07-16T21:04:26.353456+00:00",
+    "human_override": true,
+    "strategy": "unsupported"
+  },
+  "WSJ Print": {
+    "detail": "wsj.com/digital-print-edition is a print-replica front page (a scanned/paginated newspaper viewer), not individual articles -- confirmed across two real fetches, both returning just a single 'Read Stories' nav link. Structurally not the right content type for this pipeline.",
+    "detected_at": "2026-07-16T21:05:51.864970+00:00",
+    "human_override": true,
+    "strategy": "unsupported"
+  },
+  "iShares": {
+    "detail": "ishares.com is a fund-family product/locale-picker page (Individual investor, Professional investor, country selectors), not a news or blog source -- confirmed across two real fetches, no article-shaped content present regardless of link-text filtering.",
+    "detected_at": "2026-07-16T21:06:01.951211+00:00",
+    "human_override": true,
+    "strategy": "unsupported"
+  }
+}

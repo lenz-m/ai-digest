@@ -1,8 +1,13 @@
 .env
 .venv/
-cache/
 logs/
-data/
 outbox/
 __pycache__/
 *.pyc
+
+data/*
+!data/manual_sources.tsv
+
+cache/*
+!cache/trust_tiers.json
+!cache/fetch_strategy.json
