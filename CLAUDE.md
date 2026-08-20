@@ -151,12 +151,36 @@ enough volume to justify a new vendor account/dependency, and iCloud is
 already the trusted core of this setup (it carries the vault sync). Known
 risk: iCloud SMTP can be finicky about an unfamiliar Pi outbound IP; if that
 ever bites, fall back to a free-tier transactional API rather than
-re-architecting.
+re-architecting. (That risk is what the 4xx retry policy in `send.py` is
+for — greylisting and IP-reputation throttling clear over minutes, hence the
+deliberately wide 5s → 30s → 120s gaps.)
 
-## Seen-set commit rule (decided, not yet built)
+**Transport settings, all env-overridable** (`AI_DIGEST_SMTP_*`):
+`smtp.mail.me.com`, port **587 with STARTTLS** — Apple's documented config.
+465/implicit-SSL reportedly works too; flip `AI_DIGEST_SMTP_USE_SSL=true` and
+the port if 587 misbehaves. **Neither has been tested against this account
+yet — record which one worked here after the first real send, because the Pi
+deploy depends on that fact.**
 
-`dedupe()` never persists — the caller commits, and no caller does yet. When
-stage 4 adds one, this is the rule:
+`AI_DIGEST_FROM` must be an address the iCloud account actually owns, or
+iCloud answers with a hard 550 (not retryable). It defaults to
+`SMTP_USERNAME`, which is the full Apple ID and therefore definitionally
+owned. An unrecognised `From` is the likeliest first-run failure — check it
+before blaming TLS.
+
+## Seen-set commit rule (built 2026-08-20, but the persist is GATED OFF)
+
+`dedupe()` never persists — the caller commits. `deliver.py` is now that
+caller and implements the rule below in full, **but the final `seen.save()`
+is skipped unless `CONFIG.commit_seen` is on** (env `AI_DIGEST_COMMIT_SEEN`,
+flag `--commit-seen`, default false). Items are still marked in memory, so
+the code path is exercised and the counts are real; exactly one write is
+skipped, and the run logs loudly that it did.
+
+Why gated: score-stage failures at 15–23%/run and the `max_survivors` cap
+both still discard content. While nothing persists, those defects merely
+defer an item to next week. Persisting converts both into permanent
+deletion. Fix them, re-run the UAT, then turn this on. The rule itself: 
 
 **Mark seen = fuzzy-dropped duplicates + filter-rejected items +
 successfully-scored items.** Equivalently: everything *except* "the filter
@@ -276,19 +300,36 @@ without new evidence.
 
 ## Status
 
-**At a glance (Aug 2026):** Stages 1–3 built and working end to end; stage
-4a (render) built. A full `--sync` run ingests 44 sources → ~450 candidates
-→ filter → score → select → writes an HTML email preview + vault note to
-`outbox/`, ~$1/run at full sync price (~half that on batch). Curation
-machinery is doing its job: org section is all independent-analysis/news
-(no vendor junk), fluency section is real practitioner content, ranking is
-explainable (score + reason per item). Remaining known gaps: the org
-section skews AI-industry macro rather than delivery-economics — **the
-"content is genuinely scarce" explanation is at best partial**, because the
-`max_survivors` cap cuts in source order and the Economist/WSJ feeds sit at
-the end of the source list, so they have never once been scored (see the
-Seen-set commit rule section); HBR feed blocked at TLS; and the whole
-SEND/deploy half (stage 4 send + stage 5) not started. Detail below.
+**At a glance (Aug 2026):** Stages 1–4 built; **stage 4's send path has never
+run against real SMTP** — the manual smoke tests are the next thing to do. A
+full `--sync` run ingests 44 sources → ~450 candidates → filter → score →
+select → renders → delivers, ~$1/run at full sync price (~half that on
+batch). 200 tests, all offline. Curation machinery is doing its job: org
+section is all independent-analysis/news (no vendor junk), fluency section
+is real practitioner content, ranking is explainable (score + reason per
+item).
+
+Remaining known gaps:
+
+- **The seen-set is not persisted** (`commit_seen` ships off, deliberately —
+  see Stage 4b–d below). Every run therefore re-ingests everything.
+- **Score-stage failures run 15–23% per run** and are still undiagnosed. The
+  Aug 16 log recorded `out_tokens=1000` next to `len=211` for the same
+  response, which cannot both describe one plain text response, so this is
+  probably not simple truncation. Logging now captures the full body plus
+  `stop_reason` and content-block types; the next run's log should settle it.
+- **The org section skews AI-industry macro** rather than delivery-economics.
+  The "content is genuinely scarce" explanation was at best partial — the
+  `max_survivors` cap cut in source order and the Economist/WSJ feeds sit at
+  the end of the source list, so they had never once been scored. **Fixed
+  2026-08-20** by round-robin interleaving before the cap; the UAT judgment
+  needs re-running now that those feeds can actually reach the scorer.
+- **The filter passes ~71%** (312 of 441) against a design intent of ~50
+  survivors — open question, see the Seen-set commit rule section.
+- **HBR feed blocked at TLS**, and stage 5 (Pi deploy + Mac glue) not
+  started.
+
+Detail below.
 
 **Stage 1 (ingest + dedupe) — built, logic verified, not yet pytest-clean.**
 
@@ -501,28 +542,65 @@ each item with score + one-line reason per the "explainable ranking" spec,
 vendor_marketing badge, so-what for org, links, HTML-escaped) and
 `render_vault_note()` (Obsidian markdown, `type: ai-digest` frontmatter,
 `🗞️ AI Digest YYYY-MM-DD.md` filename). Pure functions, fully tested
-(`tests/test_render.py`). `run.py` now writes both to `outbox/` as previews
-on every (dry-run) run and prints the paths — so the digest can be OPENED
-and vetted before send exists. `outbox/digest-preview-*.html` is the one to
-open. Concepts frontmatter still TODO (ScoredItem has no concept tags yet).
+(`tests/test_render.py`). Also `render_email_text()` (the `text/plain`
+alternative part — no YAML frontmatter, since that's right in a vault note
+and noise in an email body). Concepts frontmatter still TODO (ScoredItem has
+no concept tags yet).
 
-**Not started (rest of stage 4):** actual email SEND (iCloud SMTP,
-`--apply`), promoting the vault note from a dry-run preview to a committed
-`outbox/Digests/` artifact written only under `--apply`, and committing the
-seen-set only after a successful send. Stage 5 (Pi deploy docs + Mac
-launchd/rsync glue) also not started.
+**Stage 4b–d (send) — BUILT 2026-08-20, not yet run against real SMTP.**
+Three new modules, all offline-tested:
 
-**Correction:** an earlier version of this line said stage 4 needed
-"writing the vault note into the real iCloud vault + clearing outbox." That
-contradicted the Architecture section and was wrong. **The pipeline never
-touches the vault.** It writes markdown to `outbox/` and stops; rsync-into-
-vault and clear-outbox are the Mac's job in stage 5, because the Pi has no
-route to iCloud Drive — which is the whole reason the architecture is split
-this way. Don't relitigate.
+- `pipeline/email_build.py` — pure MIME. `multipart/alternative`, plaintext
+  FIRST and HTML SECOND (a client renders the LAST part it understands;
+  reversing the order silently shows everyone the fallback). Subject is
+  `AI Digest — Aug 24, 2026`, deliberately stable so Mail **threads** the
+  archive — don't "improve" it by prepending the top headline.
+- `pipeline/send.py` — SMTP transport. 3 attempts, 5s → 30s → 120s ±20%
+  jitter, transient only. Never retries 535 auth / 550 sender-or-recipient
+  refused / any 5xx: repeated bad-credential attempts against Apple risk
+  throttling the account, turning a broken week into a broken month.
+  `SMTPRecipientsRefused` is handled explicitly because it does NOT subclass
+  `SMTPResponseException`, so the 5xx code check misses it and the `OSError`
+  catch-all would otherwise retry it. Credentials are read from `os.environ`
+  at point of use, never onto `CONFIG` (frozen dataclass, repr lands in
+  tracebacks), and read BEFORE any socket opens so a missing password is an
+  instant self-solving error naming the Keychain service.
+- `pipeline/deliver.py` — the transaction and the degraded-run floor. Order:
+  render → stage note to `.partial` on local disk → **send** → `os.replace`
+  → commit. Disk before send, so a render/encoding fault aborts before an
+  email is spent. **SMTP acceptance is the commit point**, so `os.replace`
+  failing AFTER a successful send still commits (the alternative re-sends
+  this week's stories next Monday, which is the worse failure) — and that
+  path is plausible, not paranoid, because stage 5's Mac-side job clears the
+  Pi's outbox and is a concurrent actor on that directory.
 
-A written implementation plan for the rest of stage 4 — design decisions,
-file-by-file changes, test strategy, build order — is in
-`docs/stage4-send-plan.md`. Nothing in it is built yet.
+`run.py` gained `--apply`, `--to`, `--commit-seen`. Dry run is the default
+and writes to `preview/` (gitignored), never `outbox/` — stage 5 sweeps
+`outbox/`, so a preview left there would be archived as if delivered.
+`--apply` is refused alongside `--limit-sources` (exit 2).
+
+**`seen.save()` SHIPS DISABLED** — `CONFIG.commit_seen`, env
+`AI_DIGEST_COMMIT_SEEN`, flag `--commit-seen`, default false. This is an
+operational gate, not an unfinished feature: the whole commit path runs
+(ordering, rollback, floor, mark set) and exactly one write is skipped,
+logged loudly with the reason. **Why:** two known defects still discard
+content silently — score-stage failures at 15–23%/run, and the
+`max_survivors` cap until the round-robin fix has a UAT pass behind it.
+While the seen-set never persists, both merely defer an item a week; the
+moment it persists, both become permanent deletion. Ship the email first,
+fix those, then flip it on.
+
+**The pipeline never touches the vault.** It writes markdown to `outbox/`
+and stops; rsync-into-vault and clear-outbox are the Mac's job in stage 5,
+because the Pi has no route to iCloud Drive — which is the whole reason the
+architecture is split this way. Don't relitigate.
+
+**Not started:** the manual smoke tests (they need Keychain entries and send
+real email — see `docs/stage4-send-plan.md` §5), and stage 5 (Pi deploy docs
++ Mac launchd/rsync glue).
+
+The design rationale behind all of the above — the questions, the rejected
+alternatives, the test strategy — is in `docs/stage4-send-plan.md`.
 
 ## Open items for next session
 
