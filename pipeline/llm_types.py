@@ -33,3 +33,15 @@ class LLMResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+
+    # Diagnostic only, never branched on. The Aug 16 log recorded
+    # out_tokens=1000 (exactly score_max_tokens) alongside len(text)=211 chars
+    # for the same response -- roughly 50 tokens of text against 1000 billed.
+    # Those cannot both describe one plain text response, so the score-stage
+    # parse failures are not simply "the JSON was truncated". stop_reason
+    # settles max_tokens truncation vs. something else in one field, and
+    # content_block_types shows whether output tokens went somewhere other
+    # than the text block. Populated by llm_client; carried so the failure
+    # log can print them.
+    stop_reason: str | None = None
+    content_block_types: tuple[str, ...] = ()

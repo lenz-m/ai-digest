@@ -34,6 +34,22 @@ class BatchTimeoutError(Exception):
     """The batch didn't reach 'ended' status within CONFIG.batch_max_wait_seconds."""
 
 
+def _message_diagnostics(message) -> tuple[str, tuple[str, ...]]:
+    """Pull the two fields that make an unparseable response diagnosable:
+    why the model stopped, and what kinds of content block it produced.
+
+    Concatenating only blocks with a `.text` attribute (below) silently drops
+    any other block type. If output tokens went into a block this code can't
+    see, the symptom downstream is exactly the Aug 16 contradiction -- a large
+    output_tokens count next to a tiny extracted string -- with nothing in the
+    log to distinguish that from ordinary truncation.
+    """
+    return (
+        getattr(message, "stop_reason", None),
+        tuple(getattr(b, "type", type(b).__name__) for b in message.content),
+    )
+
+
 def _estimate_batch_cost_usd(requests: list[LLMRequest], system_prompt: str, model: str) -> float:
     from pipeline.cost import PRICING_PER_MILLION, BATCH_DISCOUNT
 
@@ -109,9 +125,11 @@ def run_batch(
             text = "".join(block.text for block in message.content if hasattr(block, "text"))
             in_tok = message.usage.input_tokens
             out_tok = message.usage.output_tokens
+            stop_reason, block_types = _message_diagnostics(message)
             cost_tracker.record(model=model, input_tokens=in_tok, output_tokens=out_tok, batch=True)
             results[entry.custom_id] = LLMResult(
-                custom_id=entry.custom_id, text=text, input_tokens=in_tok, output_tokens=out_tok
+                custom_id=entry.custom_id, text=text, input_tokens=in_tok, output_tokens=out_tok,
+                stop_reason=stop_reason, content_block_types=block_types,
             )
         else:
             error_detail = getattr(entry.result, "error", None)
@@ -168,9 +186,11 @@ def run_sync(
             text = "".join(block.text for block in message.content if hasattr(block, "text"))
             in_tok = message.usage.input_tokens
             out_tok = message.usage.output_tokens
+            stop_reason, block_types = _message_diagnostics(message)
             cost_tracker.record(model=model, input_tokens=in_tok, output_tokens=out_tok, batch=False)
             results[req.custom_id] = LLMResult(
-                custom_id=req.custom_id, text=text, input_tokens=in_tok, output_tokens=out_tok
+                custom_id=req.custom_id, text=text, input_tokens=in_tok, output_tokens=out_tok,
+                stop_reason=stop_reason, content_block_types=block_types,
             )
         except anthropic.AnthropicError as e:  # one bad call must not kill the run
             logger.warning("sync request %s failed: %s", req.custom_id, e)

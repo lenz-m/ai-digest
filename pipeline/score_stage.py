@@ -234,39 +234,92 @@ def parse_score_response(text: str) -> dict | None:
     }
 
 
+@dataclass(frozen=True)
+class ScoreFailure:
+    """An item the filter passed that never produced a usable score.
+
+    Exists because the caller has to be able to tell "judged and rejected"
+    apart from "never judged": the seen-set commit rule marks the first and
+    must not mark the second, and the degraded-run floor gates delivery on
+    the rate of these.
+    """
+
+    candidate: Candidate
+    reason: str  # "missing" | "errored" | "unparseable"
+
+
+@dataclass(frozen=True)
+class ScoreOutcome:
+    scored: list[ScoredItem]
+    failures: list[ScoreFailure]
+
+    @property
+    def attempted(self) -> int:
+        """The denominator for the failure rate and for the email's operator
+        line -- one source of truth so the floor and the footer can't drift."""
+        return len(self.scored) + len(self.failures)
+
+
+# How much of an unparseable response body to put in the log. Generous on
+# purpose: the Aug 16 run logged out_tokens=1000 next to len=211, which cannot
+# both be true of one plain text response, and a 200-char tail was not enough
+# to tell what the body actually was. 2000 chars covers a full score JSON
+# object several times over while still bounding a runaway log line.
+_RAW_LOG_LIMIT = 2000
+
+
 def parse_score_results(
     requests: list[LLMRequest],
     survivors: list[Candidate],
     results: dict[str, LLMResult],
     trust_store=None,
-) -> list[ScoredItem]:
+) -> ScoreOutcome:
     """An item whose response fails to parse, or whose request errored, is
     DROPPED here rather than included with fabricated scores -- unlike the
     filter stage's fail-open behavior, showing a bogus score to the reader
     is worse than the item silently not appearing this week.
 
+    Dropped items are RETURNED as ScoreFailures rather than only logged. A
+    caller that can't see them cannot distinguish a thin week from a broken
+    scoring stage, and those need opposite handling downstream (a thin week
+    commits the seen-set; a degraded run must not).
+
     trust_store, if given, stamps each ScoredItem with its source's tier for
     display/audit (the tier already influenced scoring via the prompt).
     """
     scored: list[ScoredItem] = []
+    failures: list[ScoreFailure] = []
+
     for req, c in zip(requests, survivors):
         result = results.get(req.custom_id)
         if result is None or result.text is None:
             if result is not None and result.error:
                 logger.warning("score request for %r errored: %s -- dropping", c.title, result.error)
+                failures.append(ScoreFailure(candidate=c, reason="errored"))
+            else:
+                logger.warning("no score result returned for %r -- dropping", c.title)
+                failures.append(ScoreFailure(candidate=c, reason="missing"))
             continue
+
         parsed = parse_score_response(result.text)
         if parsed is None:
-            # Include the raw text (bounded) and its length so a recurring
-            # parse failure is diagnosable from the log -- e.g. truncation
-            # (text ends mid-JSON) vs. an unexpected refusal or wrapper.
+            # Log the FULL body (bounded), not just a tail. stop_reason
+            # settles truncation-vs-something-else outright, and the block
+            # types show whether output tokens went somewhere the text
+            # extraction can't see.
             raw = result.text or ""
             logger.warning(
                 "could not parse score response for %r -- dropping. "
-                "len=%d out_tokens=%d raw_tail=%r",
-                c.title, len(raw), result.output_tokens, raw[-200:],
+                "len=%d out_tokens=%d stop_reason=%s blocks=%s raw=%r%s",
+                c.title, len(raw), result.output_tokens, result.stop_reason,
+                result.content_block_types or "(unknown)",
+                raw[:_RAW_LOG_LIMIT],
+                "" if len(raw) <= _RAW_LOG_LIMIT else f" ...[+{len(raw) - _RAW_LOG_LIMIT} more chars]",
             )
+            failures.append(ScoreFailure(candidate=c, reason="unparseable"))
             continue
+
         tier = trust_store.get_tier(c.source) if trust_store is not None else ""
         scored.append(ScoredItem(candidate=c, trust_tier=tier, **parsed))
-    return scored
+
+    return ScoreOutcome(scored=scored, failures=failures)

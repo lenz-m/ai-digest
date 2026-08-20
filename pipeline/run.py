@@ -215,8 +215,17 @@ def main() -> int:
         print(f"\nlog: {log_path}")
         return 1
 
-    scored = parse_score_results(score_requests, survivors, score_results, trust_store=trust_store)
-    selection = select(scored, filtered_out_count=len(new_candidates) - len(scored))
+    outcome = parse_score_results(score_requests, survivors, score_results, trust_store=trust_store)
+    selection = select(
+        outcome.scored,
+        # Filter REJECTS only. This number is shown to the reader as "N more
+        # filtered below the cut", i.e. as curation -- so cap losses and
+        # scoring failures must be counted separately, not folded in here.
+        filtered_out_count=len(new_candidates) - len(passed),
+        scoring_failed_count=len(outcome.failures),
+        score_attempted_count=outcome.attempted,
+        filter_passed_count=len(passed),
+    )
     prog.done(f"[6/6] select      {len(selection.for_org)} for org, {len(selection.for_you)} for you")
 
     _print_digest(selection, cost_tracker)

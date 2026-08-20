@@ -135,3 +135,20 @@ def test_seen_store_round_trips_through_disk(isolated_seen_store):
     assert content_hash(item) in reloaded
     data = json.loads(isolated_seen_store.seen_cache.read_text())
     assert len(data) == 1
+
+
+# --- mark_seen idempotence ---
+# The stage-4 commit set includes items dropped BECAUSE they were already
+# seen, so mark_seen gets called on entries that already exist.
+
+def test_mark_seen_preserves_original_first_seen(tmp_path):
+    store = SeenStore(path=tmp_path / "seen.json")
+    c = Candidate(title="Story", url="https://example.com/1", source="Feed")
+
+    store.mark_seen(c)
+    first = json.loads(json.dumps(store._data))  # snapshot
+
+    store.mark_seen(Candidate(title="Restyled Title", url="https://example.com/1", source="Other Feed"))
+
+    assert store._data == first, "re-marking must not reset first_seen or overwrite the record"
+    assert len(store) == 1

@@ -109,7 +109,15 @@ class SeenStore:
         return len(self._data)
 
     def mark_seen(self, candidate: Candidate, key: str | None = None) -> None:
+        """Idempotent: re-marking an item already in the store is a no-op.
+
+        Needed because the commit set includes items that were dropped
+        BECAUSE they were already seen -- overwriting would reset first_seen
+        on every run and lose the one piece of history this store keeps.
+        """
         key = key or content_hash(candidate)
+        if key in self._data:
+            return
         self._data[key] = {
             "title": candidate.title,
             "url": candidate.url,

@@ -46,7 +46,7 @@ def test_scored_item_prefers_clean_title_for_display():
             custom_id=requests[0].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=1, output_tokens=1
         )
     }
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert scored[0].title == "How to Govern Gemini at Scale"
     # raw title preserved for auditing what the cleanup changed
     assert scored[0].raw_title.startswith("Data Analytics")
@@ -62,7 +62,7 @@ def test_scored_item_falls_back_to_raw_title_when_clean_title_missing():
             custom_id=requests[0].custom_id, text=json.dumps(resp), input_tokens=1, output_tokens=1
         )
     }
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert scored[0].title == "An Already Clean Headline"
 
 
@@ -77,7 +77,7 @@ def test_scored_item_falls_back_when_clean_title_is_blank():
             output_tokens=1,
         )
     }
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert scored[0].title == "Fallback Headline"
 
 
@@ -162,7 +162,7 @@ def test_parse_score_results_stamps_trust_tier_on_item():
             custom_id=requests[0].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=1, output_tokens=1
         )
     }
-    scored = parse_score_results(requests, survivors, results, trust_store=_FakeTrustStore(tier="vendor"))
+    scored = parse_score_results(requests, survivors, results, trust_store=_FakeTrustStore(tier="vendor")).scored
     assert scored[0].trust_tier == "vendor"
 
 
@@ -236,7 +236,7 @@ def test_parse_score_results_builds_scored_items():
             custom_id=requests[0].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=10, output_tokens=10
         )
     }
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert len(scored) == 1
     assert scored[0].org_score == 80
     # VALID_RESPONSE includes clean_title; display title prefers it over raw scrape
@@ -247,7 +247,7 @@ def test_parse_score_results_builds_scored_items():
 def test_parse_score_results_drops_item_on_missing_result():
     survivors = [_candidate()]
     requests = build_score_requests(survivors, {})
-    scored = parse_score_results(requests, survivors, results={})
+    scored = parse_score_results(requests, survivors, results={}).scored
     assert scored == [], "a missing result should drop the item, not fabricate scores"
 
 
@@ -255,7 +255,7 @@ def test_parse_score_results_drops_item_on_errored_request():
     survivors = [_candidate()]
     requests = build_score_requests(survivors, {})
     results = {requests[0].custom_id: LLMResult(custom_id=requests[0].custom_id, text=None, error="timeout")}
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert scored == []
 
 
@@ -263,7 +263,7 @@ def test_parse_score_results_drops_item_on_unparsable_response():
     survivors = [_candidate()]
     requests = build_score_requests(survivors, {})
     results = {requests[0].custom_id: LLMResult(custom_id=requests[0].custom_id, text="garbage", input_tokens=1, output_tokens=1)}
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert scored == []
 
 
@@ -274,7 +274,88 @@ def test_parse_score_results_partial_batch_keeps_the_good_ones():
         requests[0].custom_id: LLMResult(custom_id=requests[0].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=1, output_tokens=1),
         # requests[1] has no result at all
     }
-    scored = parse_score_results(requests, survivors, results)
+    scored = parse_score_results(requests, survivors, results).scored
     assert len(scored) == 1
     # This test is about partial-batch survival, not title cleanup — match on url
     assert scored[0].url == "https://x.com/a"
+
+
+# --- ScoreOutcome: failures are RETURNED, not just logged ---
+# The caller has to tell "judged and rejected" apart from "never judged":
+# the seen-set rule marks the first and must not mark the second, and the
+# degraded-run floor gates delivery on the rate of these.
+
+def test_failures_are_returned_with_their_reason():
+    survivors = [
+        _candidate("Missing", "https://x.com/missing"),
+        _candidate("Errored", "https://x.com/errored"),
+        _candidate("Garbage", "https://x.com/garbage"),
+        _candidate("Good", "https://x.com/good"),
+    ]
+    requests = build_score_requests(survivors, {})
+    results = {
+        # requests[0] absent entirely -> "missing"
+        requests[1].custom_id: LLMResult(custom_id=requests[1].custom_id, text=None, error="timeout"),
+        requests[2].custom_id: LLMResult(custom_id=requests[2].custom_id, text="not json", input_tokens=1, output_tokens=1),
+        requests[3].custom_id: LLMResult(custom_id=requests[3].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=1, output_tokens=1),
+    }
+    outcome = parse_score_results(requests, survivors, results)
+
+    assert [i.url for i in outcome.scored] == ["https://x.com/good"]
+    assert [(f.candidate.title, f.reason) for f in outcome.failures] == [
+        ("Missing", "missing"),
+        ("Errored", "errored"),
+        ("Garbage", "unparseable"),
+    ]
+
+
+def test_fully_failed_batch_returns_no_scores_and_all_failures():
+    """The exact input the degraded-run floor exists to catch."""
+    survivors = [_candidate(f"S{i}", f"https://x.com/{i}") for i in range(3)]
+    requests = build_score_requests(survivors, {})
+    outcome = parse_score_results(requests, survivors, results={})
+    assert outcome.scored == []
+    assert len(outcome.failures) == 3
+    assert outcome.attempted == 3
+
+
+def test_attempted_is_the_denominator_for_scored_plus_failed():
+    survivors = [_candidate("A", "https://x.com/a"), _candidate("B", "https://x.com/b")]
+    requests = build_score_requests(survivors, {})
+    results = {
+        requests[0].custom_id: LLMResult(custom_id=requests[0].custom_id, text=json.dumps(VALID_RESPONSE), input_tokens=1, output_tokens=1)
+    }
+    outcome = parse_score_results(requests, survivors, results)
+    assert outcome.attempted == 2 == len(outcome.scored) + len(outcome.failures)
+
+
+def test_unparseable_response_logs_the_full_body_and_stop_reason(caplog):
+    """Aug 16 logged out_tokens=1000 next to len=211 for the same response --
+    those can't both describe one plain text response, and a 200-char tail
+    wasn't enough to say what the body was. The log must now carry the whole
+    body plus stop_reason, so next week's failures are diagnosable from the
+    log rather than needing a reproduction."""
+    survivors = [_candidate("Weird", "https://x.com/weird")]
+    requests = build_score_requests(survivors, {})
+    body = "REFUSAL-MARKER " + "x" * 300
+    results = {
+        requests[0].custom_id: LLMResult(
+            custom_id=requests[0].custom_id, text=body, input_tokens=1, output_tokens=1000,
+            stop_reason="max_tokens", content_block_types=("thinking", "text"),
+        )
+    }
+    with caplog.at_level("WARNING"):
+        outcome = parse_score_results(requests, survivors, results)
+
+    assert len(outcome.failures) == 1
+    log = caplog.text
+    assert "REFUSAL-MARKER" in log, "the head of the body must be logged, not only the tail"
+    assert "stop_reason=max_tokens" in log
+    assert "thinking" in log
+    assert "out_tokens=1000" in log
+
+
+def test_raw_body_logging_is_bounded():
+    from pipeline.score_stage import _RAW_LOG_LIMIT
+
+    assert _RAW_LOG_LIMIT == 2000, "a runaway response must not write an unbounded log line"

@@ -50,7 +50,51 @@ _STYLE = """
   .skipped { font-size: 13px; color: #555; }
   .skipped li { margin: 0 0 3px; }
   .footer { color: #999; font-size: 12px; margin-top: 36px; border-top: 1px solid #eee; padding-top: 12px; }
+  .opnote { color: #a08000; font-size: 11px; margin: 4px 0 0; }
 """
+
+
+# --------------------------------------------------------------------------
+# Operator diagnostics
+# --------------------------------------------------------------------------
+#
+# WHY these are in the email at all, when a curated digest should not carry
+# pipeline diagnostics: there is no reader who isn't the operator. Recipients
+# are fixed at one address -- the user's own -- and the alternative home for
+# these numbers is a log file written at 6am on an unattended Pi, which is not
+# an artifact anyone reads. The email is the only thing reliably read, so it
+# is the only place a signal actually lands.
+#
+# And the degraded-run floor does not cover this. It fires above 30%, which
+# makes it a catastrophe detector; the measured steady state is 14/60 (23%)
+# and 9/60 (15%). Both send silently under a floor-only rule while quietly
+# discarding a seventh to a quarter of everything that got as far as scoring.
+#
+# Both lines are emitted ONLY when non-zero, so a healthy week reads clean.
+
+
+def _score_failure_note(selection: Selection) -> str | None:
+    """"9 of 60 could not be scored" -- a bare "9 items" is unjudgeable, since
+    9-of-12 and 9-of-300 want opposite responses, so the denominator is not
+    optional."""
+    if not selection.scoring_failed_count:
+        return None
+    n = selection.scoring_failed_count
+    attempted = selection.score_attempted_count
+    if attempted:
+        return f"⚠ {n} of {attempted} items could not be scored this week and were dropped ({n / attempted:.0%})."
+    return f"⚠ {n} items could not be scored this week and were dropped."
+
+
+def _cap_note(selection: Selection) -> str | None:
+    """"60 of 312 that passed the filter were scored (cap)" -- a different
+    failure and a different number from the scoring one, so a separate line.
+    Per §0.7 this is currently the larger of the two silent losses."""
+    passed = selection.filter_passed_count
+    scored = selection.score_attempted_count
+    if not passed or passed <= scored:
+        return None
+    return f"⚠ {scored} of {passed} items that passed the filter were scored (max_survivors cap)."
 
 
 def _org_item_html(item) -> str:
@@ -92,6 +136,14 @@ def render_email_html(selection: Selection, generated_at: datetime | None = None
     if selection.filtered_out_count:
         filtered_note = f" · {selection.filtered_out_count} more filtered below the cut"
 
+    # Operator notes sit after "Considered and skipped", visually de-emphasised
+    # -- an operator note, not content. Absent entirely on a healthy week.
+    op_notes = "".join(
+        f'\n  <p class="opnote">{_ESC(note)}</p>'
+        for note in (_score_failure_note(selection), _cap_note(selection))
+        if note
+    )
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -111,11 +163,74 @@ def render_email_html(selection: Selection, generated_at: datetime | None = None
 
   <h2>Considered &amp; skipped</h2>
 {skipped}
-
+{op_notes}
   <p class="footer">{len(selection.for_org)} for the org · {len(selection.for_you)} for you · \
 {len(selection.considered_and_skipped)} listed in the tail{filtered_note}.</p>
 </body>
 </html>"""
+
+
+# --------------------------------------------------------------------------
+# Email (plain text)
+# --------------------------------------------------------------------------
+
+def _org_item_text(item) -> str:
+    flag = "  (vendor content)" if item.vendor_marketing else ""
+    sowhat = f"\n  So what: {item.so_what}" if item.so_what.strip() else ""
+    return (
+        f"* {item.title}{flag}\n"
+        f"  {item.source} · org relevance {item.org_score}/100\n"
+        f"  {item.url}\n"
+        f"  {item.summary}{sowhat}\n"
+        f"  Why it ranked: {item.org_reason}\n"
+    )
+
+
+def _fluency_item_text(item) -> str:
+    return (
+        f"* {item.title}\n"
+        f"  {item.source} · fluency {item.fluency_score}/100\n"
+        f"  {item.url}\n"
+        f"  {item.summary}\n"
+        f"  Why it ranked: {item.fluency_reason}\n"
+    )
+
+
+def render_email_text(selection: Selection, generated_at: datetime | None = None) -> str:
+    """The text/plain alternative part of the email.
+
+    Lives here rather than in email_build.py so all rendering stays in one
+    tested module and email_build.py stays pure MIME. Deliberately NOT the
+    vault note: that carries YAML frontmatter, which is right in an Obsidian
+    file and noise in an email body.
+    """
+    generated_at = generated_at or datetime.now(timezone.utc)
+
+    org = "\n".join(_org_item_text(i) for i in selection.for_org) or "Nothing cleared the bar this week.\n"
+    you = "\n".join(_fluency_item_text(i) for i in selection.for_you) or "Nothing this week.\n"
+    skipped = "\n".join(
+        f"- {i.title} — {i.source}" for i in selection.considered_and_skipped
+    ) or "None."
+
+    filtered_note = ""
+    if selection.filtered_out_count:
+        filtered_note = f" · {selection.filtered_out_count} more filtered below the cut"
+
+    op_notes = "".join(
+        f"\n{note}"
+        for note in (_score_failure_note(selection), _cap_note(selection))
+        if note
+    )
+
+    return (
+        f"AI DIGEST\n{_fmt_date(generated_at)}\n\n"
+        f"FOR THE ORG\n{'-' * 40}\n\n{org}\n"
+        f"FOR YOU\n{'-' * 40}\n\n{you}\n"
+        f"CONSIDERED & SKIPPED\n{'-' * 40}\n\n{skipped}\n"
+        f"{op_notes}\n"
+        f"\n{len(selection.for_org)} for the org · {len(selection.for_you)} for you · "
+        f"{len(selection.considered_and_skipped)} listed in the tail{filtered_note}.\n"
+    )
 
 
 # --------------------------------------------------------------------------
