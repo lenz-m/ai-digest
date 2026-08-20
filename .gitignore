@@ -11,3 +11,4 @@ data/*
 cache/*
 !cache/trust_tiers.json
 !cache/fetch_strategy.json
+.claude/settings.local.json
