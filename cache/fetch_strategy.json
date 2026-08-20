@@ -1,9 +1,107 @@
 {
+  "A16Z": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:28.950270+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://a16z.com/feed/"
+  },
   "AI Courses": {
     "detail": "learn.deeplearning.ai is a login-gated course catalog, not an articles/news page -- confirmed across two real fetches, both returning account-chrome links (Reset Workspace Guide, Forgot password?, Sign in here!). Not a scraping bug to fix; the content type itself doesn't fit this pipeline.",
     "detected_at": "2026-07-16T21:05:48.376838+00:00",
     "human_override": true,
     "strategy": "unsupported"
+  },
+  "AI Newsletter": {
+    "detail": "https://nlpnews.substack.com/feed",
+    "detected_at": "2026-08-20T23:27:25.038825+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://open.substack.com/pub/nlpnews?r=24lwo&utm_medium=ios"
+  },
+  "AWS": {
+    "detail": "https://aws.amazon.com/blogs/aws/feed/",
+    "detected_at": "2026-08-20T23:27:40.457832+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://aws.amazon.com/blogs/aws/feed/"
+  },
+  "Anthropic": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:39.927122+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.anthropic.com/news"
+  },
+  "Azure": {
+    "detail": "https://azure.microsoft.com/en-us/blog/feed/",
+    "detected_at": "2026-08-20T23:27:03.223745+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://azure.microsoft.com/en-us/blog/"
+  },
+  "Ben's Bites": {
+    "detail": "https://www.bensbites.com/feed",
+    "detected_at": "2026-08-20T23:27:49.237492+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.bensbites.com"
+  },
+  "Benedict Evans": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:36.414195+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.ben-evans.com"
+  },
+  "Economist": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:48.441411+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.economist.com"
+  },
+  "Economist (Business)": {
+    "detail": "https://www.economist.com/business/rss.xml",
+    "detected_at": "2026-08-20T23:27:59.750730+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.economist.com/business/rss.xml"
+  },
+  "Economist (Finance & Economics)": {
+    "detail": "https://www.economist.com/finance-and-economics/rss.xml",
+    "detected_at": "2026-08-20T23:28:00.119849+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.economist.com/finance-and-economics/rss.xml"
+  },
+  "Economist (Science & Technology)": {
+    "detail": "https://www.economist.com/science-and-technology/rss.xml",
+    "detected_at": "2026-08-20T23:27:59.945441+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.economist.com/science-and-technology/rss.xml"
+  },
+  "Every": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:33.095835+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://every.to/newsletter"
+  },
+  "Exponential View": {
+    "detail": "https://www.exponentialview.co/feed",
+    "detected_at": "2026-08-20T23:27:23.695417+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.exponentialview.co"
+  },
+  "GCP": {
+    "detail": "https://cloudblog.withgoogle.com/rss/",
+    "detected_at": "2026-08-20T23:27:12.394481+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://cloudblog.withgoogle.com/rss/"
   },
   "Gartner Insights": {
     "detail": "Listing scrape returned zero same-domain links -- page appears entirely JS-rendered, likely also bot-detection",
@@ -11,11 +109,179 @@
     "human_override": true,
     "strategy": "unsupported"
   },
+  "George Vetticanden (Agent Deployments)": {
+    "detail": "https://www.youtube.com/feeds/videos.xml?channel_id=UCiqPscXu0lrzk5XbnX6lmcw",
+    "detected_at": "2026-08-20T23:27:51.524755+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.youtube.com/@georgevetticaden599"
+  },
+  "Google": {
+    "detail": "https://blog.google/rss",
+    "detected_at": "2026-08-20T23:27:42.023733+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://blog.google"
+  },
+  "Hacker News": {
+    "detail": "https://news.ycombinator.com/rss",
+    "detected_at": "2026-08-20T23:27:29.149291+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://news.ycombinator.com"
+  },
+  "Harvard Business Review": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:59.449360+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://feeds.harvardbusiness.org/harvardbusiness"
+  },
+  "Intelligence Squared": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:58.414526+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "http://rss.acast.com/intelligencesquared"
+  },
+  "Jefferson Phisher": {
+    "detail": "https://www.youtube.com/feeds/videos.xml?channel_id=UC7QqGSaDlY59D6pETLAvoyQ",
+    "detected_at": "2026-08-20T23:27:52.782711+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://youtube.com/@jeffersonfisher?si=193PSLdCPWefb5Y_"
+  },
+  "Lab Notes Blog": {
+    "detail": "https://labnotes.org/rss",
+    "detected_at": "2026-08-20T23:27:34.858099+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://labnotes.org/weekend-reading-this-heater-is-from-space/"
+  },
+  "LangChain": {
+    "detail": "https://blog.langchain.com/rss.xml",
+    "detected_at": "2026-08-20T23:27:43.674478+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://blog.langchain.com"
+  },
+  "Lit-Quidity": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:47.139215+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.execsum.co"
+  },
+  "Marginal Revolution": {
+    "detail": "https://marginalrevolution.com/feed",
+    "detected_at": "2026-08-20T23:27:35.586331+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://marginalrevolution.com"
+  },
+  "One Useful Thing": {
+    "detail": "https://www.oneusefulthing.org/feed",
+    "detected_at": "2026-08-20T23:27:24.382483+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.oneusefulthing.org"
+  },
+  "OpenAI": {
+    "detail": "https://openai.com/news/rss.xml",
+    "detected_at": "2026-08-20T23:27:38.158982+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://openai.com/news/"
+  },
+  "Paul Graham Essays": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:56.283177+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.paulgraham.com/articles.html"
+  },
+  "PineCone": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:50.898762+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.pinecone.io/learn/?category=Latest&view=grid"
+  },
+  "Sebastian Mallaby": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:56.423263+00:00",
+    "human_override": false,
+    "strategy": "unsupported",
+    "url": "https://x.com/scmallaby?s=21"
+  },
+  "Simon Willison Blog": {
+    "detail": "https://simonwillison.net/atom/everything/",
+    "detected_at": "2026-08-20T23:27:34.070761+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://simonwillison.net"
+  },
+  "Stratechery": {
+    "detail": "https://stratechery.com/feed",
+    "detected_at": "2026-08-20T23:27:22.840979+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://stratechery.com"
+  },
+  "TBPN": {
+    "detail": "https://tbpn.substack.com/feed",
+    "detected_at": "2026-08-20T23:27:22.900659+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://tbpn.substack.com"
+  },
   "TechMeme": {
     "detail": "https://www.techmeme.com/feed.xml",
     "detected_at": "2026-07-16T21:04:28.250632+00:00",
     "human_override": true,
     "strategy": "rss"
+  },
+  "The Bay Area Times": {
+    "detail": null,
+    "detected_at": "2026-08-20T23:27:21.928267+00:00",
+    "human_override": false,
+    "strategy": "listing",
+    "url": "https://www.bayareatimes.com"
+  },
+  "The Neuron": {
+    "detail": "https://rss.beehiiv.com/feeds/N4eCstxvgX.xml",
+    "detected_at": "2026-08-20T23:27:26.905808+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://www.theneurondaily.com"
+  },
+  "Value Investing World": {
+    "detail": "https://valueinvestingworld.substack.com/feed",
+    "detected_at": "2026-08-20T23:27:48.528593+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://open.substack.com/pub/valueinvestingworld?r=24lwo&utm_medium=ios"
+  },
+  "WSJ (Business)": {
+    "detail": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness",
+    "detected_at": "2026-08-20T23:28:00.403171+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness"
+  },
+  "WSJ (Economy)": {
+    "detail": "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed",
+    "detected_at": "2026-08-20T23:28:00.550111+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed"
+  },
+  "WSJ (Technology)": {
+    "detail": "https://feeds.content.dowjones.io/public/rss/RSSWSJD",
+    "detected_at": "2026-08-20T23:28:00.489765+00:00",
+    "human_override": false,
+    "strategy": "rss",
+    "url": "https://feeds.content.dowjones.io/public/rss/RSSWSJD"
   },
   "WSJ CIO Journal": {
     "detail": "JS-rendered page, static fetch returned only CSS/chrome text, no article content reachable without executing JS",
