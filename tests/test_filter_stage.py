@@ -9,6 +9,7 @@ from pipeline.dedupe import Candidate
 from pipeline.filter_stage import (
     build_filter_prompt,
     build_filter_requests,
+    interleave_by_source,
     parse_filter_response,
     parse_filter_results,
 )
@@ -150,3 +151,49 @@ def test_parse_filter_results_fails_open_on_partial_response_missing_an_id():
     assert verdicts[0].passed is False
     assert verdicts[1].passed is True  # missing from response -> failed open
     assert verdicts[2].passed is False
+
+
+# --- interleave_by_source: the max_survivors cap must not cut by source position ---
+
+def _c(source, n):
+    return Candidate(title=f"{source}-{n}", url=f"https://{source}.example.com/{n}", source=source)
+
+
+def test_interleave_takes_one_per_source_per_round():
+    passed = [_c("A", 1), _c("A", 2), _c("A", 3), _c("B", 1), _c("C", 1), _c("C", 2)]
+    out = interleave_by_source(passed)
+    assert [c.title for c in out] == ["A-1", "B-1", "C-1", "A-2", "C-2", "A-3"]
+
+
+def test_interleave_preserves_within_source_order():
+    passed = [_c("A", i) for i in range(5)] + [_c("B", i) for i in range(5)]
+    out = interleave_by_source(passed)
+    assert [c.title for c in out if c.source == "A"] == [f"A-{i}" for i in range(5)]
+    assert [c.title for c in out if c.source == "B"] == [f"B-{i}" for i in range(5)]
+
+
+def test_interleave_is_a_permutation_not_a_filter():
+    passed = [_c("A", 1), _c("B", 1), _c("B", 2), _c("C", 1)]
+    out = interleave_by_source(passed)
+    assert sorted(c.url for c in out) == sorted(c.url for c in passed)
+    assert len(out) == len(passed)
+
+
+def test_interleave_rescues_a_source_at_the_end_of_the_list_from_the_cap():
+    """The actual defect: 'Economist' sits at the end of sources.tsv behind a
+    high-volume feed, so a flat passed[:cap] never reaches it. This is the
+    regression test for §0.7 -- if the interleave is ever removed, the tail
+    source silently stops being scored again and nothing else fails."""
+    cap = 10
+    passed = [_c("BayAreaTimes", i) for i in range(30)] + [_c("Economist", i) for i in range(3)]
+
+    assert not any(c.source == "Economist" for c in passed[:cap]), "precondition: flat slice starves the tail"
+
+    survivors = interleave_by_source(passed)[:cap]
+    assert [c.title for c in survivors if c.source == "Economist"] == ["Economist-0", "Economist-1", "Economist-2"]
+
+
+def test_interleave_handles_empty_and_single_source():
+    assert interleave_by_source([]) == []
+    single = [_c("A", 1), _c("A", 2)]
+    assert interleave_by_source(single) == single

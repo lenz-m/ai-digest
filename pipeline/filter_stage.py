@@ -184,3 +184,39 @@ def parse_filter_results(
                 verdicts[id_] = FilterVerdict(candidate=c, passed=True, reason="unparsed, passed through")
 
     return [v for v in verdicts if v is not None]
+
+
+def interleave_by_source(candidates: list[Candidate]) -> list[Candidate]:
+    """Reorder filter-survivors round-robin across sources, preserving each
+    source's internal order.
+
+    WHY this exists (measured 2026-08-20, see CLAUDE.md "Seen-set commit
+    rule" and docs/stage4-send-plan.md §0.7): the caller slices this list to
+    CONFIG.max_survivors, and the cap binds on every full run (441 candidates
+    -> 312 passed -> exactly 60 scored). FilterVerdict carries only a
+    pass/fail bool, so there is no score to rank by and the list arrives in
+    *source order*. A flat slice therefore cuts the same tail of sources.tsv
+    every single week, deterministically -- the Aug 16 run ran out around
+    source row 14 of 51, and the six manual-only feeds added specifically to
+    fix the delivery-economics gap (Economist x3, WSJ x3) sit at rows 46-51
+    and had never been scored on any run.
+
+    Round-robin fixes two things at once. Every source gets representation,
+    so a high-volume feed near the front can't consume the whole budget; and
+    the cut becomes genuinely merit-neutral and re-rolls week to week as feed
+    contents change, which is what makes the seen-set rule's "leave cap-cut
+    items unmarked so they get another shot" premise actually true.
+    """
+    by_source: dict[str, list[Candidate]] = {}
+    for c in candidates:
+        by_source.setdefault(c.source, []).append(c)
+
+    # dict preserves insertion order, so the first round is still source
+    # order -- an unbiased cut, not a reshuffled one.
+    queues = list(by_source.values())
+    out: list[Candidate] = []
+    while queues:
+        queues = [q for q in queues if q]
+        for q in queues:
+            out.append(q.pop(0))
+    return out

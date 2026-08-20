@@ -34,7 +34,12 @@ from pipeline.config import CONFIG, ROOT
 from pipeline.cost import BudgetExceededError, CostTracker
 from pipeline.dedupe import SeenStore, candidate_from_raw_item, dedupe
 from pipeline.fetch import fetch_all, fetch_article_texts
-from pipeline.filter_stage import FILTER_SYSTEM_PROMPT, build_filter_requests, parse_filter_results
+from pipeline.filter_stage import (
+    FILTER_SYSTEM_PROMPT,
+    build_filter_requests,
+    interleave_by_source,
+    parse_filter_results,
+)
 from pipeline.ingest import load_sources
 from pipeline.llm_client import run_batch, run_sync
 from pipeline.render import render_email_html, render_vault_note, vault_note_filename
@@ -176,7 +181,10 @@ def main() -> int:
 
     verdicts = parse_filter_results(filter_requests, new_candidates, filter_results)
     passed = [v.candidate for v in verdicts if v.passed]
-    survivors = passed[: CONFIG.max_survivors]
+    # Round-robin across sources BEFORE the cap. `passed` is in source order
+    # and the cap binds every run, so a flat slice cut the same tail of
+    # sources.tsv every week -- see interleave_by_source() for the measurement.
+    survivors = interleave_by_source(passed)[: CONFIG.max_survivors]
     cap_note = f", capped to {len(survivors)}" if len(passed) > len(survivors) else ""
     prog.done(f"[4/6] filter      {len(passed)} passed{cap_note}")
 
