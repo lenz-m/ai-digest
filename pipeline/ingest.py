@@ -77,7 +77,7 @@ def _load_manual_sources() -> list[Source]:
     if not path.exists():
         return []
     try:
-        return _parse_tsv(path.read_text())
+        return _parse_tsv(path.read_text(encoding="utf-8"))
     except IngestError as e:
         logger.warning("manual sources file %s unparsable (%s); ignoring it", path, e)
         return []
@@ -121,7 +121,7 @@ def _load_reminders_sources(now: datetime | None = None) -> IngestResult:
 
     if live.exists():
         try:
-            sources = _parse_tsv(live.read_text())
+            sources = _parse_tsv(live.read_text(encoding="utf-8"))
             if sources:
                 cache.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(live, cache)
@@ -146,5 +146,5 @@ def _load_reminders_sources(now: datetime | None = None) -> IngestResult:
     else:
         logger.warning("using cached sources (%d days old) -- live TSV unavailable", age_days)
 
-    sources = _parse_tsv(cache.read_text())
+    sources = _parse_tsv(cache.read_text(encoding="utf-8"))
     return IngestResult(sources=sources, from_cache=True, cache_age_days=age_days, stale=stale)

@@ -112,7 +112,7 @@ class TrustStore:
         self.path = path or CONFIG.trust_cache
         self._overrides: dict[str, str] = {}
         if self.path.exists():
-            self._overrides = json.loads(self.path.read_text())
+            self._overrides = json.loads(self.path.read_text(encoding="utf-8"))
 
     def get_tier(self, source_name: str) -> str:
         return self._overrides.get(source_name) or SEED_TIERS.get(source_name, DEFAULT_TIER)
@@ -126,5 +126,5 @@ class TrustStore:
         merged = dict(SEED_TIERS)
         merged.update(self._overrides)  # existing edits win
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(merged, indent=2, sort_keys=True))
+        self.path.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
         self._overrides = merged

@@ -100,7 +100,7 @@ class SeenStore:
         self.path = path or CONFIG.seen_cache
         self._data: dict[str, dict] = {}
         if self.path.exists():
-            self._data = json.loads(self.path.read_text())
+            self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
     def __contains__(self, key: str) -> bool:
         return key in self._data
@@ -119,7 +119,7 @@ class SeenStore:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
+        self.path.write_text(json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def dedupe(

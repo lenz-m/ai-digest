@@ -225,9 +225,9 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     CONFIG.outbox_dir.mkdir(parents=True, exist_ok=True)
     email_path = CONFIG.outbox_dir / f"digest-preview-{now.strftime('%Y%m%d-%H%M%S')}.html"
-    email_path.write_text(render_email_html(selection, now))
+    email_path.write_text(render_email_html(selection, now), encoding="utf-8")
     note_path = CONFIG.outbox_dir / vault_note_filename(now)
-    note_path.write_text(render_vault_note(selection, now))
+    note_path.write_text(render_vault_note(selection, now), encoding="utf-8")
 
     print(f"\nlog:            {log_path}")
     print(f"email preview:  {email_path}   <- open this to see the actual digest")

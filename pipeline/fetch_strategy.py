@@ -298,7 +298,7 @@ class StrategyCache:
         self.path = path or CONFIG.fetch_strategy_cache
         self._data: dict[str, dict] = {}
         if self.path.exists():
-            self._data = json.loads(self.path.read_text())
+            self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
     def get(self, source_name: str, now: datetime | None = None) -> dict | None:
         entry = self._data.get(source_name)
@@ -334,4 +334,4 @@ class StrategyCache:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
+        self.path.write_text(json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8")
