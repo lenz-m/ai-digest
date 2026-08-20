@@ -23,7 +23,12 @@ fi
 
 fetch_secret() {
     local service="$1"
-    security find-generic-password -a "$USER" -s "$service" -w 2>/dev/null
+    # `|| true` is load-bearing under `set -e`: without it, a MISSING secret
+    # makes the command substitution fail, which aborts the whole script at
+    # the assignment -- so the caller's own "not found, here's how to add it"
+    # message below could never be reached, and the SMTP block's deliberate
+    # warn-and-continue would become an exit.
+    security find-generic-password -a "$USER" -s "$service" -w 2>/dev/null || true
 }
 
 ANTHROPIC_API_KEY="$(fetch_secret ai-digest-anthropic-api-key)"
@@ -34,5 +39,19 @@ if [ -z "$ANTHROPIC_API_KEY" ]; then
     exit 1
 fi
 export ANTHROPIC_API_KEY
+
+# SMTP (stage 4). Unlike the Anthropic key, missing creds WARN rather than
+# exit: dry runs and `uv run pytest` need no SMTP at all, and failing the
+# wrapper without them would break the everyday path. send.py raises a clear,
+# self-solving error at point of use when --apply is set and these are absent.
+SMTP_USERNAME="$(fetch_secret ai-digest-smtp-username)"
+SMTP_APP_PASSWORD="$(fetch_secret ai-digest-smtp-app-password)"
+if [ -n "$SMTP_USERNAME" ] && [ -n "$SMTP_APP_PASSWORD" ]; then
+    export SMTP_USERNAME SMTP_APP_PASSWORD
+else
+    echo "note: SMTP creds not in Keychain (ai-digest-smtp-username / ai-digest-smtp-app-password)." >&2
+    echo "      Dry runs and pytest are unaffected; --apply will fail with instructions." >&2
+    echo "      See docs/stage4-send-plan.md Q4 for the one-time setup." >&2
+fi
 
 exec "$@"

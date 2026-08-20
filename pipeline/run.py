@@ -1,6 +1,22 @@
-"""End-to-end run through stage 3: ingest -> dedupe -> fetch -> filter ->
-score -> select. Stage 4 (render/send email/write outbox note) doesn't
-exist yet, so this prints the resulting selection to stdout.
+"""End-to-end run: ingest -> dedupe -> fetch -> filter -> score -> select ->
+deliver.
+
+DRY RUN BY DEFAULT. Without --apply nothing is sent, outbox/ is not touched,
+and the seen-set is not committed -- previews land in preview/ instead, so
+the digest can be opened and vetted first. --apply sends the email, places
+the vault note in outbox/Digests/ for stage 5 to mirror, and runs the commit.
+
+All the transaction rules (ordering, rollback, the degraded-run floor, which
+items get marked seen) live in deliver.py, not here. This module is glue.
+
+THE SEEN-SET IS NOT PERSISTED BY DEFAULT, even under --apply. The whole
+commit path runs -- items are marked, the ordering and rollback behave
+normally -- but the final write is skipped unless AI_DIGEST_COMMIT_SEEN is
+set or --commit-seen is passed. Deliberate, not unfinished: score-stage
+failures run 15-23% per run, and until the max_survivors round-robin fix has
+a UAT pass behind it the cap is still a source of unreviewed loss. While the
+seen-set never persists, both defects merely defer an item to next week; the
+moment it persists, both become permanent deletion.
 
 Console output is a clean stage-by-stage progress view. All the verbose
 detail (every HTTP request, batch poll, warning) goes to a timestamped log
@@ -8,23 +24,22 @@ file under logs/ instead of scrolling the terminal -- the run prints that
 path at the end, so "paste me the log" is one `cat` rather than a scroll-
 back hunt. Use --verbose to also mirror the full detail to the console.
 
-Deliberately does NOT call seen.save() -- the persistent seen-set is only
-committed once an actual send happens (stage 4), so running this repeatedly
-while stage 4 gets built doesn't burn through candidates that were never
-actually delivered anywhere. Matches the "caller persists only once a run
-is committed" contract documented in dedupe.dedupe().
-
 Usage:
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --limit-sources 5
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --verbose
+    ./scripts/run_with_secrets.sh uv run python -m pipeline.run --apply
+    ./scripts/run_with_secrets.sh uv run python -m pipeline.run --apply --to me@icloud.com
+
+Exit codes: 0 delivered (or dry run), 1 send failed / degraded run refused,
+2 bad invocation.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
-import time
 from datetime import datetime, timezone
 
 import anthropic
@@ -33,6 +48,8 @@ import httpx
 from pipeline.config import CONFIG, ROOT
 from pipeline.cost import BudgetExceededError, CostTracker
 from pipeline.dedupe import SeenStore, candidate_from_raw_item, dedupe
+from pipeline.deliver import deliver
+from pipeline.email_build import parse_addrs
 from pipeline.fetch import fetch_all, fetch_article_texts
 from pipeline.filter_stage import (
     FILTER_SYSTEM_PROMPT,
@@ -42,9 +59,9 @@ from pipeline.filter_stage import (
 )
 from pipeline.ingest import load_sources
 from pipeline.llm_client import run_batch, run_sync
-from pipeline.render import render_email_html, render_vault_note, vault_note_filename
 from pipeline.score_stage import SCORE_SYSTEM_PROMPT, build_score_requests, parse_score_results
 from pipeline.select import select
+from pipeline.send import SendError, send_message
 from pipeline.trust import TrustStore
 
 logger = logging.getLogger(__name__)
@@ -105,7 +122,36 @@ def main() -> int:
         "full price but returns in seconds, for fast iteration. The weekly "
         "production run should omit this and use the 50%%-cheaper batch path.",
     )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually send the email and place the vault note in outbox/. "
+        "Without this the run is a dry run: previews only, nothing sent.",
+    )
+    parser.add_argument(
+        "--to",
+        metavar="ADDR",
+        help="Recipient(s), comma-separated. Overrides AI_DIGEST_TO.",
+    )
+    parser.add_argument(
+        "--commit-seen",
+        action="store_true",
+        help="Persist the seen-set after a successful send. OFF by default "
+        "(see the module docstring): score-stage failures and the "
+        "max_survivors cap still drop content, and persisting turns those "
+        "from 'returns next week' into permanent deletion.",
+    )
     args = parser.parse_args()
+
+    # --apply with a truncated source list would send a junk digest built from
+    # the first few sources, and (with committing on) burn those items' one
+    # shot at being shown. The two flags serve opposite purposes; refuse
+    # rather than silently pick one. argparse.error() exits 2.
+    if args.apply and args.limit_sources:
+        parser.error(
+            "--apply cannot be combined with --limit-sources: that would send a "
+            "partial digest built from only the first few sources"
+        )
 
     log_path = _setup_logging(args.verbose)
     prog = _Progress(enabled=not args.verbose)
@@ -230,21 +276,82 @@ def main() -> int:
 
     _print_digest(selection, cost_tracker)
 
-    # --- render the reader-facing digest to preview files (no send yet) ---
+    # --- the commit set (only used under --apply) ---
+    # Everything EXCEPT "the filter said yes and we never got a score".
+    #   - dropped: already-seen + fuzzy cross-source duplicates
+    #   - filter-rejected: genuinely judged, just judged not worth scoring
+    #   - successfully scored: judged
+    # Excluded on purpose: outcome.failures (parse_score_results fails closed,
+    # so those items were judged worth scoring and then lost to a bug --
+    # marking them would permanently bury content with no symptom), and
+    # max_survivors-capped items. The cap exclusion is only defensible now
+    # that interleave_by_source() makes the cut merit-neutral and re-rolled
+    # each week; before that fix the same source tail lost every week forever.
+    mark_seen_candidates = (
+        dropped
+        + [v.candidate for v in verdicts if not v.passed]
+        + [i.candidate for i in outcome.scored]
+    )
+
     now = datetime.now(timezone.utc)
-    CONFIG.outbox_dir.mkdir(parents=True, exist_ok=True)
-    email_path = CONFIG.outbox_dir / f"digest-preview-{now.strftime('%Y%m%d-%H%M%S')}.html"
-    email_path.write_text(render_email_html(selection, now), encoding="utf-8")
-    note_path = CONFIG.outbox_dir / vault_note_filename(now)
-    note_path.write_text(render_vault_note(selection, now), encoding="utf-8")
+    to_addrs = parse_addrs(args.to or CONFIG.digest_to)
+    # An unrecognised From gets a hard 550 from iCloud. SMTP_USERNAME is the
+    # full Apple ID, i.e. an address the account definitionally owns, so it's
+    # the safest fallback when AI_DIGEST_FROM isn't set.
+    from_addr = CONFIG.digest_from or os.environ.get("SMTP_USERNAME", "")
+
+    try:
+        result = deliver(
+            selection, now,
+            send_fn=send_message,
+            seen=seen,
+            mark_seen_candidates=mark_seen_candidates,
+            score_outcome=outcome,
+            apply=args.apply,
+            to_addrs=to_addrs,
+            from_addr=from_addr,
+            commit_seen=True if args.commit_seen else None,
+        )
+    except (SendError, ValueError) as e:
+        print(f"\nSEND FAILED -- nothing committed, nothing left in outbox:\n  {e}")
+        print("Not committing the seen-set IS the retry: the next run re-ingests these items.")
+        print(f"\nlog: {log_path}")
+        return 1
 
     print(f"\nlog:            {log_path}")
-    print(f"email preview:  {email_path}   <- open this to see the actual digest")
-    print(f"vault note:     {note_path}")
-    print(
-        "(preview only -- nothing sent, vault not written, seen-set not "
-        "committed. Re-running shows the same items.)"
-    )
+
+    if not args.apply:
+        html, note, _txt = result.preview_paths
+        print(f"email preview:  {html}   <- open this to see the actual digest")
+        print(f"vault note:     {note}")
+        print(
+            "(dry run -- nothing sent, outbox untouched, seen-set not committed. "
+            "Re-running shows the same items. Add --apply to send.)"
+        )
+        return 0
+
+    if not result.committed:
+        print(f"\nNOT SENT and NOT COMMITTED: {result.reason}")
+        print("These items were never judged, so they stay unmarked and come back next run.")
+        return 1
+
+    if result.sent:
+        print(f"email sent to:  {', '.join(to_addrs)}")
+        print(f"vault note:     {result.note_path if result.note_path else '(NOT PLACED -- see log)'}")
+    else:
+        print(f"no email sent:  {result.reason}")
+
+    if result.seen_persisted:
+        print(f"seen-set:       committed, {result.marked_seen} item(s) marked")
+    else:
+        print(
+            f"seen-set:       NOT committed ({result.marked_seen} item(s) marked in memory "
+            "then discarded).\n"
+            "                commit_seen is off by default -- score-stage failures and the\n"
+            "                max_survivors cap still drop content, and persisting would turn\n"
+            "                those from 'returns next week' into permanent deletion.\n"
+            "                Enable with --commit-seen or AI_DIGEST_COMMIT_SEEN=true."
+        )
     return 0
 
 
