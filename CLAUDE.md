@@ -95,6 +95,24 @@ into a `Media/🔗 <title>.md` stub matching the existing online-article
 convention (`type: online-article`, `author: "[[👤 ]]"`, `date-added`, empty
 `cover:` for `add_covers.py` to enrich later).
 
+**Outbox mirrors the vault's folder structure** — the pipeline writes
+`outbox/Digests/🗞️ AI Digest <date>.md`, not a flat `outbox/*.md`. Reason:
+the Media-stub stretch goal above means outbox will eventually carry files
+bound for **two different vault folders**, and a flat outbox forces stage
+5's rsync to become a per-file router. Mirroring keeps rsync a plain
+directory mirror, and adding `outbox/Media/` later then costs nothing.
+
+Corollary: **`outbox/` holds only vault-bound files.** Dry-run previews go
+to `preview/` (gitignored), never into the directory stage 5 sweeps —
+otherwise every stale preview gets archived into the vault as if it were
+real.
+
+**Stage 5 gotcha to test for, not yet addressed:** the note filename starts
+with 🗞️ and the vault convention is full of emoji filenames. Rsyncing
+non-ASCII filenames Pi (Linux, NFC) → Mac (APFS) is a known source of
+duplicate-file bugs from Unicode normalization mismatch. Verify a round trip
+before trusting the archive half.
+
 ## Secrets
 
 Split by machine, matching what each actually has available:
@@ -122,13 +140,60 @@ nothing) in `.env` on that machine.
 
 ## Email delivery
 
-SMTP via iCloud, app-specific password in `.env`. Chosen over a
-transactional API (Postmark/SES/etc.) because it's one email/week — not
+SMTP via iCloud, app-specific password. **Keychain on the Mac
+(`ai-digest-smtp-username`, `ai-digest-smtp-app-password`), `.env` on the
+Pi** — same split as the Anthropic key, per the Secrets section above. (An
+earlier version of this paragraph said "app-specific password in `.env`"
+full stop; that predated the Keychain split and contradicted the Secrets
+section. There is no `.env` on the Mac.)
+
+Chosen over a transactional API (Postmark/SES/etc.) because it's one
+email/week — not
 enough volume to justify a new vendor account/dependency, and iCloud is
 already the trusted core of this setup (it carries the vault sync). Known
 risk: iCloud SMTP can be finicky about an unfamiliar Pi outbound IP; if that
 ever bites, fall back to a free-tier transactional API rather than
 re-architecting.
+
+## Seen-set commit rule (decided, not yet built)
+
+`dedupe()` never persists — the caller commits, and no caller does yet. When
+stage 4 adds one, this is the rule:
+
+**Mark seen = fuzzy-dropped duplicates + filter-rejected items +
+successfully-scored items.** Equivalently: everything *except* "the filter
+said yes and we never got a score."
+
+**Why mark rejects at all.** Not because of compounding cost — for a *dated*
+item recurrence is bounded (10-day `fetch_max_age_days` at a weekly cadence
+means at most one repeat), and a returning reject only re-enters the
+*batched* filter stage, never the per-item score stage. Pennies. The real
+reason is **undated items**: `filter_recent()` passes anything with no
+published date through unconditionally, and listing-scraped sources almost
+never carry a date. For those the seen-set is the *only* thing preventing
+indefinite resubmission, with no upper bound. The docstring in
+`fetch_strategy.py` already says so ("the persistent seen-set and stage 3's
+filter are the backstop for those instead").
+
+**Why the never-scored are excluded.** `parse_score_results` fails closed —
+an errored or unparseable response drops the item silently, and there is a
+documented incident where 22 of 27 responses were lost to `max_tokens`
+truncation. The same applies to items cut by the `max_survivors` cap. Both
+groups were judged *worth scoring* and then dropped for reasons unrelated to
+their merit; marking them would permanently bury content on the basis of a
+bug, with no symptom. Filter-rejected items, by contrast, were genuinely
+judged.
+
+**A failed run needs no retry machinery.** Not committing the seen-set *is*
+the retry: the items were never consumed, so the next run re-ingests them
+normally. No dead-letter queue, no `--resume`, no state file.
+
+**But a degraded run must not commit.** A scoring stage that mostly failed
+produces an empty selection that is byte-identical to a genuinely thin week.
+These need opposite handling — a thin week commits (those items *were*
+judged), a degraded run must not (they weren't). The plan in
+`docs/stage4-send-plan.md` gates on the score-failure *rate*, checked before
+the empty-selection branch.
 
 ## Scheduling
 
@@ -407,9 +472,22 @@ and vetted before send exists. `outbox/digest-preview-*.html` is the one to
 open. Concepts frontmatter still TODO (ScoredItem has no concept tags yet).
 
 **Not started (rest of stage 4):** actual email SEND (iCloud SMTP,
-`--apply`), writing the vault note into the real iCloud vault + clearing
-outbox, committing the seen-set only after a successful send. Stage 5 (Pi
-deploy docs + Mac launchd/rsync glue) also not started.
+`--apply`), promoting the vault note from a dry-run preview to a committed
+`outbox/Digests/` artifact written only under `--apply`, and committing the
+seen-set only after a successful send. Stage 5 (Pi deploy docs + Mac
+launchd/rsync glue) also not started.
+
+**Correction:** an earlier version of this line said stage 4 needed
+"writing the vault note into the real iCloud vault + clearing outbox." That
+contradicted the Architecture section and was wrong. **The pipeline never
+touches the vault.** It writes markdown to `outbox/` and stops; rsync-into-
+vault and clear-outbox are the Mac's job in stage 5, because the Pi has no
+route to iCloud Drive — which is the whole reason the architecture is split
+this way. Don't relitigate.
+
+A written implementation plan for the rest of stage 4 — design decisions,
+file-by-file changes, test strategy, build order — is in
+`docs/stage4-send-plan.md`. Nothing in it is built yet.
 
 ## Open items for next session
 
