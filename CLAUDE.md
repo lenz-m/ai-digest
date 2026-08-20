@@ -180,7 +180,14 @@ skipped, and the run logs loudly that it did.
 Why gated: score-stage failures at 15–23%/run and the `max_survivors` cap
 both still discard content. While nothing persists, those defects merely
 defer an item to next week. Persisting converts both into permanent
-deletion. Fix them, re-run the UAT, then turn this on. The rule itself: 
+deletion. Fix them, re-run the UAT, then turn this on.
+
+**Status of that precondition, 2026-08-20:** both causes now have fixes in
+the tree — the round-robin cap fix, and the two score-stage fixes in
+"Score-stage failures: what they actually were" above. **Neither has been
+verified against a real run**, because the account ran out of credit. Keep
+the gate off until a clean, credit-funded `--sync` run shows a score-failure
+rate near zero. The rule itself: 
 
 **Mark seen = fuzzy-dropped duplicates + filter-rejected items +
 successfully-scored items.** Equivalently: everything *except* "the filter
@@ -313,11 +320,10 @@ Remaining known gaps:
 
 - **The seen-set is not persisted** (`commit_seen` ships off, deliberately —
   see Stage 4b–d below). Every run therefore re-ingests everything.
-- **Score-stage failures run 15–23% per run** and are still undiagnosed. The
-  Aug 16 log recorded `out_tokens=1000` next to `len=211` for the same
-  response, which cannot both describe one plain text response, so this is
-  probably not simple truncation. Logging now captures the full body plus
-  `stop_reason` and content-block types; the next run's log should settle it.
+- ~~**Score-stage failures run 15–23% per run**, undiagnosed~~ —
+  **DIAGNOSED AND FIXED 2026-08-20.** The Aug 20 log settled it, and the
+  headline number was measuring two unrelated things at once. See "Score-stage
+  failures: what they actually were" below.
 - **The org section skews AI-industry macro** rather than delivery-economics.
   The "content is genuinely scarce" explanation was at best partial — the
   `max_survivors` cap cut in source order and the Economist/WSJ feeds sit at
@@ -329,7 +335,84 @@ Remaining known gaps:
 - **HBR feed blocked at TLS**, and stage 5 (Pi deploy + Mac glue) not
   started.
 
-Detail below.
+## Score-stage failures: what they actually were (settled 2026-08-20)
+
+The 15–23%-per-run failure rate, and the 48% on the Aug 20 `--sync` run, were
+never one defect. `logs/run-20260820-182636.log` breaks down as **29 failures
+of 60 requests (48%)**, and only two causes are present:
+
+| Cause | Count | Nature |
+|---|---|---|
+| `400` — "Your credit balance is too low" | **28** | account-level, not per-item |
+| `stop_reason=max_tokens` mid-JSON | **1** | real truncation |
+| anything else | **0** | — |
+
+Requests `score-0` … `score-31` succeeded; the balance hit zero and
+`score-32` … `score-59` bounced instantly, all inside 18:34:13. **There is no
+third or fourth cause in that log** — every one of the 28 carries the identical
+billing message and `request_id`-per-line, and 31 items scored cleanly. The
+earlier "56 of 60 / 3 unclassified" reading counted the whole queue as failed;
+the run was closer to half-successful than that, right up until the money ran
+out.
+
+Two fixes landed, plus one for a reporting gap the incident exposed:
+
+**1. An account-level 400 now aborts the run** (`pipeline/api_errors.py`, new).
+`parse_score_results` fails closed, which is correct for a malformed answer
+about one article and wrong for a failure that will hit every remaining
+request identically. The pipeline walked the rest of the queue firing requests
+that could not succeed and logged 28 ordinary drops. `is_fatal_api_error()`
+now classifies: **fatal** = 401 auth / 403 permission / 404 bad model id / 400
+whose body names a billing or quota refusal; **per-item** = everything else,
+explicitly including 429 and 5xx (transient, already SDK-retried, and a
+sustained outage is still caught by the degraded-run floor). `llm_client`
+raises `FatalAPIError` at the first fatal error, in **both** the sync and batch
+paths and for both stages — the same failure in the filter stage would have
+been even more expensive to misread. `run.py` catches it and returns **exit 3**
+(new code, distinct from 1 = send failed) before `deliver()` is ever called,
+so no send, no `outbox/` write and no seen-set commit happen by construction
+rather than by a flag. The billing detection is a message-substring match
+because the API reports a zero balance as `invalid_request_error` — the same
+error *type* as "prompt too long" — so nothing structured separates them. That
+match is an optimisation over a safe default, not the only guard: if Anthropic
+rewords the message, the failures degrade back to per-item drops, the rate goes
+over the ceiling, and `deliver.py` still refuses to send or commit.
+
+**2. Extended thinking is disabled on the score call.** The one genuine
+truncation logged `blocks=('thinking', 'text')` — the model emitted a reasoning
+block, those tokens are billed as output and count against `max_tokens`, and
+`llm_client` concatenates `.text` only. **That is the Aug 16 `out_tokens=1000`
+vs `len=211` contradiction, now confirmed rather than hypothesised.** The score
+model (`claude-sonnet-5`) thinks by default when no `thinking` parameter is
+sent. `build_score_requests` now sets `disable_thinking=True` on every request
+and `llm_client` forwards `thinking={"type": "disabled"}`. Disabling beats
+raising the cap: cheaper (no reasoning tokens at output prices), predictable
+output length rather than just more rope, and it removes the failure mode
+instead of widening it. `score_max_tokens` therefore stays at 1000 (~2× the
+observed ~474-token response). Only the score stage opts out — the filter runs
+on Haiku 4.5, which has a different thinking API and doesn't think by default.
+**This was not only a cost issue:** the truncated body was well-formed JSON cut
+off mid-`summary` with `org_score: 42` already written, on the WSJ
+Stripe/OpenRouter story. A real judgment was lost to the cap.
+
+**Caveat for the next UAT:** every score produced before this change was
+produced *with* thinking on. Disabling it changes the judgment substrate, not
+just the token accounting — if scores drift noticeably when the rubric is
+re-judged, suspect this first.
+
+**3. The cost report now reaches the log.** CLAUDE.md requires every run to
+print *and log* token counts and cost. It was `print()`-only, from inside
+`_print_digest`, so the Aug 20 log — the one run where the money mattered —
+carries no cost figure anywhere. On the Pi nobody reads the console, so the
+requirement was unmet in production precisely when it was needed. `run.py`
+emits it from a `finally`, covering every exit path: clean return, budget
+ceiling, fatal API abort, unhandled exception.
+
+**Neither fix has been verified against a real run** — the account had no
+credit left when they were written. The next `--sync` run after a top-up is
+the verification, and it is also the re-run of the rubric UAT.
+
+Stage detail below.
 
 **Stage 1 (ingest + dedupe) — built, logic verified, not yet pytest-clean.**
 
@@ -586,6 +669,8 @@ operational gate, not an unfinished feature: the whole commit path runs
 logged loudly with the reason. **Why:** two known defects still discard
 content silently — score-stage failures at 15–23%/run, and the
 `max_survivors` cap until the round-robin fix has a UAT pass behind it.
+(Both now have fixes in the tree as of 2026-08-20; neither is verified
+against a real run yet. The gate stays off until one is.)
 While the seen-set never persists, both merely defer an item a week; the
 moment it persists, both become permanent deletion. Ship the email first,
 fix those, then flip it on.

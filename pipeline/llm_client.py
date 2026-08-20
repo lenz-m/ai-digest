@@ -23,6 +23,7 @@ import anthropic
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request
 
+from pipeline.api_errors import FatalAPIError, fatal_reason, is_fatal_api_error
 from pipeline.config import CONFIG
 from pipeline.cost import CostTracker, estimate_tokens
 from pipeline.llm_types import LLMRequest, LLMResult
@@ -48,6 +49,57 @@ def _message_diagnostics(message) -> tuple[str, tuple[str, ...]]:
         getattr(message, "stop_reason", None),
         tuple(getattr(b, "type", type(b).__name__) for b in message.content),
     )
+
+
+def _raise_if_fatal(status_code: int | None, message: str, custom_id: str = "") -> None:
+    """Stop the whole run on an account-level failure instead of degrading it
+    into N per-item drops.
+
+    See pipeline/api_errors.py for what qualifies and why. The bar is "no
+    later request in this run can succeed": a bad key, a bad model id, or a
+    zero credit balance. Anything transient (429, 5xx, a dropped connection)
+    stays a per-item degrade -- the SDK has already retried it, and a
+    sustained outage is still caught downstream by deliver.py's
+    degraded-run floor.
+
+    Raising here rather than returning a flag is deliberate: the caller is a
+    loop over requests, and the entire point is that the loop must not take
+    another step.
+    """
+    if not is_fatal_api_error(status_code, message):
+        return
+    reason = fatal_reason(status_code, message)
+    logger.error(
+        "ABORTING RUN -- %s. This is an account-level failure, not a bad "
+        "response about one item: every remaining request would fail the same "
+        "way. Nothing will be sent, written to outbox, or committed. Detail: %s",
+        reason, message,
+    )
+    raise FatalAPIError(reason, message, custom_id)
+
+
+def _api_error_parts(exc: Exception) -> tuple[int | None, str]:
+    """Pull (status_code, message) off an SDK exception.
+
+    getattr rather than isinstance checks so this keeps working across SDK
+    versions and for connection-level errors, which carry no status at all.
+    str(exc) is used for the message because that is what includes the JSON
+    error body -- the only place the billing text appears.
+    """
+    return getattr(exc, "status_code", None), str(exc)
+
+
+def _thinking_param(req: LLMRequest) -> dict:
+    """Extra kwargs controlling extended thinking for one request.
+
+    Only ever DISABLES it, never enables it. A model that thinks by default
+    (Sonnet 5 does) spends output tokens on a reasoning block that is billed,
+    counts against max_tokens, and is then thrown away by the `.text`-only
+    extraction below -- which is precisely how a well-formed score response
+    got truncated mid-summary on Aug 20 at max_tokens=1000. See
+    score_stage.build_score_requests.
+    """
+    return {"thinking": {"type": "disabled"}} if req.disable_thinking else {}
 
 
 def _estimate_batch_cost_usd(requests: list[LLMRequest], system_prompt: str, model: str) -> float:
@@ -96,12 +148,19 @@ def run_batch(
                     {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
                 ],
                 messages=[{"role": "user", "content": req.prompt}],
+                **_thinking_param(req),
             ),
         )
         for req in requests
     ]
 
-    batch = client.messages.batches.create(requests=batch_requests)
+    # A zero balance or a bad key fails HERE, before any spend -- classify it
+    # rather than letting a raw SDK exception escape as a stack trace.
+    try:
+        batch = client.messages.batches.create(requests=batch_requests)
+    except anthropic.AnthropicError as e:
+        _raise_if_fatal(*_api_error_parts(e))
+        raise
     logger.info("submitted batch %s with %d request(s)", batch.id, len(requests))
 
     start = time.monotonic()
@@ -113,7 +172,14 @@ def run_batch(
                 f"(last status: {batch.processing_status})"
             )
         time.sleep(CONFIG.batch_poll_interval_seconds)
-        batch = client.messages.batches.retrieve(batch.id)
+        # Same classification while polling: a key revoked or an account
+        # suspended mid-batch should end the run with a named cause, not an
+        # SDK traceback out of the middle of a while loop.
+        try:
+            batch = client.messages.batches.retrieve(batch.id)
+        except anthropic.AnthropicError as e:
+            _raise_if_fatal(*_api_error_parts(e))
+            raise
         logger.info("batch %s status: %s", batch.id, batch.processing_status)
         if on_poll is not None:
             on_poll(int(time.monotonic() - start), batch.processing_status)
@@ -133,6 +199,12 @@ def run_batch(
             )
         else:
             error_detail = getattr(entry.result, "error", None)
+            # A batch can also carry an account-level refusal per entry (the
+            # balance can hit zero between submission and execution), so the
+            # same classification applies here, not only at submit time. No
+            # status code is available on a batch error object, so this
+            # matches on the message text alone -- hence the explicit 400.
+            _raise_if_fatal(400, str(error_detail), entry.custom_id)
             logger.warning("batch request %s did not succeed: %s", entry.custom_id, error_detail)
             results[entry.custom_id] = LLMResult(custom_id=entry.custom_id, text=None, error=str(error_detail))
 
@@ -182,6 +254,7 @@ def run_sync(
                     {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
                 ],
                 messages=[{"role": "user", "content": req.prompt}],
+                **_thinking_param(req),
             )
             text = "".join(block.text for block in message.content if hasattr(block, "text"))
             in_tok = message.usage.input_tokens
@@ -193,6 +266,12 @@ def run_sync(
                 stop_reason=stop_reason, content_block_types=block_types,
             )
         except anthropic.AnthropicError as e:  # one bad call must not kill the run
+            # ...but an account-level failure must. Without this the loop
+            # walks the whole remaining queue firing requests that cannot
+            # succeed and logs each rejection as an ordinary per-item drop --
+            # which is exactly what happened on Aug 20 (28 requests, all
+            # inside one second, all reported as unusable responses).
+            _raise_if_fatal(*_api_error_parts(e), req.custom_id)
             logger.warning("sync request %s failed: %s", req.custom_id, e)
             results[req.custom_id] = LLMResult(custom_id=req.custom_id, text=None, error=str(e))
 

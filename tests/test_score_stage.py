@@ -359,3 +359,19 @@ def test_raw_body_logging_is_bounded():
     from pipeline.score_stage import _RAW_LOG_LIMIT
 
     assert _RAW_LOG_LIMIT == 2000, "a runaway response must not write an unbounded log line"
+
+
+def test_score_requests_disable_extended_thinking():
+    """Score is a structured-output task, and the score model thinks by
+    default. Reasoning tokens are billed as output and count against
+    max_tokens, but llm_client extracts `.text` only -- on 2026-08-20 that
+    truncated a well-formed score JSON mid-summary (stop_reason=max_tokens,
+    blocks=('thinking', 'text')) and the item was dropped as unparseable.
+    """
+    survivors = [
+        Candidate(title="t", url="https://example.com/a", source="S"),
+        Candidate(title="u", url="https://example.com/b", source="S"),
+    ]
+    requests = build_score_requests(survivors, {})
+    assert requests, "no score requests built"
+    assert all(r.disable_thinking for r in requests)

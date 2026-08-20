@@ -20,6 +20,12 @@ class LLMRequest:
     prompt: str
     max_tokens: int = 1024
 
+    # Turn extended thinking OFF for this request. Set by score_stage; see
+    # the comment there. Lives on the request rather than on CONFIG because
+    # it is a property of the TASK (structured JSON out, no reasoning needed)
+    # and the two stages differ -- llm_client just forwards it to the SDK.
+    disable_thinking: bool = False
+
 
 @dataclass(frozen=True)
 class LLMResult:
@@ -34,14 +40,14 @@ class LLMResult:
     output_tokens: int = 0
     error: str | None = None
 
-    # Diagnostic only, never branched on. The Aug 16 log recorded
-    # out_tokens=1000 (exactly score_max_tokens) alongside len(text)=211 chars
-    # for the same response -- roughly 50 tokens of text against 1000 billed.
-    # Those cannot both describe one plain text response, so the score-stage
-    # parse failures are not simply "the JSON was truncated". stop_reason
-    # settles max_tokens truncation vs. something else in one field, and
-    # content_block_types shows whether output tokens went somewhere other
-    # than the text block. Populated by llm_client; carried so the failure
-    # log can print them.
+    # Diagnostic only, never branched on -- and they did their job. The Aug 16
+    # log recorded out_tokens=1000 (exactly score_max_tokens) alongside
+    # len(text)=211 chars for the same response, which cannot both describe
+    # one plain text response. These two fields settled it on Aug 20:
+    # `stop_reason=max_tokens blocks=('thinking', 'text')`. The model was
+    # emitting a reasoning block that is billed as output and counted against
+    # max_tokens, while the extractor only concatenates `.text`. Hence
+    # disable_thinking above. Keep collecting both -- they are how the next
+    # unexplained parse failure gets diagnosed from the log instead of guessed.
     stop_reason: str | None = None
     content_block_types: tuple[str, ...] = ()

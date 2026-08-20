@@ -69,3 +69,41 @@ def test_report_includes_call_count_and_per_model_breakdown():
 def test_report_handles_zero_calls():
     tracker = CostTracker(ceiling_usd=100)
     assert tracker.report() == "0 API calls, $0.00 total"
+
+
+def test_cost_report_is_written_to_the_log_not_just_printed(caplog):
+    """CLAUDE.md's cost-discipline section requires every run to print AND LOG
+    token counts and cost, "so drift is visible the next morning". It used to
+    be printed only, from inside run.py's _print_digest -- so the run that
+    died in the score stage on 2026-08-20 left a log with no cost figure at
+    all, and on the Pi nobody sees the console.
+    """
+    import logging
+
+    from pipeline.run import _emit_cost_report
+
+    tracker = CostTracker()
+    tracker.record(model="claude-sonnet-5", input_tokens=1000, output_tokens=500, batch=False)
+
+    with caplog.at_level(logging.INFO, logger="pipeline.run"):
+        _emit_cost_report(tracker)
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "cost report" in logged
+    assert "claude-sonnet-5" in logged
+    assert "$" in logged
+
+
+def test_cost_report_is_logged_even_when_no_calls_were_made(caplog):
+    """The abnormal-termination case: a run that aborts before the first API
+    call still has to say so in the log, rather than leaving a silent gap
+    that reads the same as "the logging is broken"."""
+    import logging
+
+    from pipeline.run import _emit_cost_report
+
+    with caplog.at_level(logging.INFO, logger="pipeline.run"):
+        _emit_cost_report(CostTracker())
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "0 API calls" in logged

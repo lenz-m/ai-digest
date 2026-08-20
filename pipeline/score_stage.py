@@ -142,7 +142,32 @@ def build_score_requests(
     """One request per survivor. article_texts maps candidate.url -> full
     text (fetched separately, only for survivors -- see fetch.fetch_article_text).
     trust_store, if given, tags each prompt with the source's trust tier so
-    the org rubric can hold vendor-published content to a higher bar."""
+    the org rubric can hold vendor-published content to a higher bar.
+
+    EXTENDED THINKING IS DISABLED on every score request (2026-08-20). This
+    is a structured-output task -- read one article, apply a fixed rubric,
+    emit one JSON object -- and the score model thinks by default, which cost
+    us content rather than just money:
+
+      logs/run-20260820-182636.log recorded, for the WSJ Stripe/OpenRouter
+      story, `stop_reason=max_tokens blocks=('thinking', 'text')` against a
+      557-char body that was well-formed JSON cut off mid-`summary`, with
+      org_score 42 already written. Reasoning tokens are billed as output and
+      count against max_tokens, but the extractor in llm_client concatenates
+      `.text` only -- so the thinking block silently ate the budget the JSON
+      object needed, and a real judgment was dropped as "unparseable".
+
+    Disabling is preferred over simply raising score_max_tokens: it is
+    cheaper (no reasoning tokens at output prices), it makes the output
+    length predictable instead of merely giving it more rope, and it removes
+    the failure mode rather than widening it. It also means score_max_tokens
+    can stay at 1000, which is ~2x the observed ~474-token JSON response.
+
+    Caveat worth knowing before reading a rubric UAT: every score produced
+    before this change was produced WITH thinking on, so this changes the
+    judgment substrate, not just the token accounting. If scores drift
+    noticeably, this is the first thing to suspect.
+    """
     requests = []
     for i, c in enumerate(survivors):
         text = article_texts.get(c.url, "")
@@ -152,6 +177,7 @@ def build_score_requests(
                 custom_id=f"score-{i}",
                 prompt=build_score_prompt(c, text, tier_desc),
                 max_tokens=CONFIG.score_max_tokens,
+                disable_thinking=True,
             )
         )
     return requests

@@ -32,7 +32,10 @@ Usage:
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --apply --to me@icloud.com
 
 Exit codes: 0 delivered (or dry run), 1 send failed / degraded run refused,
-2 bad invocation.
+2 bad invocation, 3 aborted -- account-level API failure (no credit, bad key,
+bad model id). 3 is separate from 1 on purpose: on the Pi nobody reads the
+console, and "top up credits" and "SMTP is broken" want different responses
+from whatever notices the non-zero exit.
 """
 from __future__ import annotations
 
@@ -45,6 +48,7 @@ from datetime import datetime, timezone
 import anthropic
 import httpx
 
+from pipeline.api_errors import FatalAPIError
 from pipeline.config import CONFIG, ROOT
 from pipeline.cost import BudgetExceededError, CostTracker
 from pipeline.dedupe import SeenStore, candidate_from_raw_item, dedupe
@@ -156,6 +160,33 @@ def main() -> int:
     log_path = _setup_logging(args.verbose)
     prog = _Progress(enabled=not args.verbose)
 
+    # Created here, not inside _run, so the finally below can always report
+    # it -- including when the run dies before the digest is ever printed.
+    cost_tracker = CostTracker()
+    try:
+        return _run(args, log_path, prog, cost_tracker)
+    finally:
+        # CLAUDE.md's cost-discipline section requires every run to print AND
+        # LOG token counts and cost. It used to be printed only, from inside
+        # _print_digest -- so run-20260820-182636.log, which died in the score
+        # stage, carries no cost figure at all. On the Pi nobody sees the
+        # console, which made the requirement unmet in production exactly when
+        # it mattered most. A finally covers every exit path: clean return,
+        # budget ceiling, fatal API abort, unhandled exception.
+        _emit_cost_report(cost_tracker)
+
+
+def _emit_cost_report(cost_tracker: CostTracker) -> None:
+    report = cost_tracker.report()
+    print(f"\ncost:           {report.splitlines()[0]}")
+    for line in report.splitlines()[1:]:
+        print(f"      {line}")
+    # One log record, not one per line, so the report stays greppable as a
+    # unit ("grep -A3 'cost report'").
+    logger.info("cost report (%d call(s) recorded): %s", len(cost_tracker.records), report)
+
+
+def _run(args, log_path, prog, cost_tracker: CostTracker) -> int:
     print("ai-digest run starting" + ("  [SYNC mode -- full price, no batch discount]" if args.sync else ""))
     print(f"  (full detail logging to {log_path})\n")
 
@@ -193,7 +224,6 @@ def main() -> int:
         print(f"\nlog: {log_path}")
         return 0
 
-    cost_tracker = CostTracker()
     client = anthropic.Anthropic()
     trust_store = TrustStore()
     trust_store.materialize_seed()  # write cache/trust_tiers.json so it can be hand-edited
@@ -221,9 +251,11 @@ def main() -> int:
     except BudgetExceededError as e:
         prog.done("")
         print(f"\nBUDGET CEILING HIT during filter stage, stopping:\n  {e}")
-        print(cost_tracker.report())
         print(f"\nlog: {log_path}")
         return 1
+    except FatalAPIError as e:
+        prog.done("")
+        return _abort(e, "filter", log_path)
 
     verdicts = parse_filter_results(filter_requests, new_candidates, filter_results)
     passed = [v.candidate for v in verdicts if v.passed]
@@ -257,9 +289,11 @@ def main() -> int:
     except BudgetExceededError as e:
         prog.done("")
         print(f"\nBUDGET CEILING HIT during score stage, stopping:\n  {e}")
-        print(cost_tracker.report())
         print(f"\nlog: {log_path}")
         return 1
+    except FatalAPIError as e:
+        prog.done("")
+        return _abort(e, "score", log_path)
 
     outcome = parse_score_results(score_requests, survivors, score_results, trust_store=trust_store)
     selection = select(
@@ -274,7 +308,7 @@ def main() -> int:
     )
     prog.done(f"[6/6] select      {len(selection.for_org)} for org, {len(selection.for_you)} for you")
 
-    _print_digest(selection, cost_tracker)
+    _print_digest(selection)
 
     # --- the commit set (only used under --apply) ---
     # Everything EXCEPT "the filter said yes and we never got a score".
@@ -355,6 +389,29 @@ def main() -> int:
     return 0
 
 
+def _abort(e: FatalAPIError, stage: str, log_path) -> int:
+    """An account-level API failure ends the run here, before deliver().
+
+    Returning early is the whole safety property: deliver() is what sends the
+    email, writes outbox/, and commits the seen-set, and it is never reached
+    on this path -- so all three are skipped by construction rather than by a
+    flag anyone has to remember to check. (deliver()'s own degraded-run floor
+    would also have refused, but only after the pipeline had walked the entire
+    remaining queue, and its message would have said "scoring degraded"
+    without ever naming the real cause.)
+    """
+    print(f"\nRUN ABORTED during the {stage} stage -- {e.reason}")
+    print(f"  {e.detail}")
+    print(
+        "\nThis is an account-level failure, not a bad response about one item:\n"
+        "every remaining request would have failed the same way. Nothing was sent,\n"
+        "nothing was written to outbox/, and the seen-set was not committed -- so\n"
+        "re-running after fixing this re-ingests every item normally."
+    )
+    print(f"\nlog: {log_path}")
+    return 3
+
+
 def _raw_title_note(item) -> str | None:
     """Show the pre-cleanup title when the model rewrote it, so a UAT pass
     can spot a headline that was invented rather than recovered."""
@@ -366,7 +423,7 @@ def _raw_title_note(item) -> str | None:
     return f"  (raw: {raw})"
 
 
-def _print_digest(selection, cost_tracker) -> None:
+def _print_digest(selection) -> None:
     print("\n" + "=" * 60)
     print(f"FOR THE ORG ({len(selection.for_org)})")
     print("=" * 60)
@@ -399,8 +456,6 @@ def _print_digest(selection, cost_tracker) -> None:
     print("=" * 60)
     for item in selection.considered_and_skipped:
         print(f"  org={item.org_score:3d} fluency={item.fluency_score:3d}  {item.title} ({item.source})")
-
-    print(f"\n{cost_tracker.report()}")
 
 
 if __name__ == "__main__":
