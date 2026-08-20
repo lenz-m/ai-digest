@@ -142,10 +142,8 @@ nothing) in `.env` on that machine.
 
 SMTP via iCloud, app-specific password. **Keychain on the Mac
 (`ai-digest-smtp-username`, `ai-digest-smtp-app-password`), `.env` on the
-Pi** — same split as the Anthropic key, per the Secrets section above. (An
-earlier version of this paragraph said "app-specific password in `.env`"
-full stop; that predated the Keychain split and contradicted the Secrets
-section. There is no `.env` on the Mac.)
+Pi** — same split as the Anthropic key, per the Secrets section above.
+There is no `.env` on the Mac.
 
 Chosen over a transactional API (Postmark/SES/etc.) because it's one
 email/week — not
@@ -178,11 +176,48 @@ filter are the backstop for those instead").
 **Why the never-scored are excluded.** `parse_score_results` fails closed —
 an errored or unparseable response drops the item silently, and there is a
 documented incident where 22 of 27 responses were lost to `max_tokens`
-truncation. The same applies to items cut by the `max_survivors` cap. Both
-groups were judged *worth scoring* and then dropped for reasons unrelated to
-their merit; marking them would permanently bury content on the basis of a
-bug, with no symptom. Filter-rejected items, by contrast, were genuinely
-judged.
+truncation. Those items were judged *worth scoring* and then dropped by a
+bug; marking them would permanently bury content with no symptom.
+Filter-rejected items, by contrast, were genuinely judged.
+
+**`max_survivors`-capped items are a DIFFERENT case — do not lump them in
+here.** An earlier version of this rule did, on the premise that the cap
+cuts "for reasons unrelated to merit" and so those items deserve another
+shot next week. Verified 2026-08-20; the premise is wrong in a way that
+inverts the conclusion. `run.py:179` is `passed[:CONFIG.max_survivors]`, and
+`passed` is in **candidate order = source order** (`sources.tsv` row order,
+with manual-only sources appended last), because `FilterVerdict` carries
+only a pass/fail bool — there is no score to rank by. So the cap does not
+cut arbitrarily, it cuts **positionally and deterministically**: the same
+tail of the source list loses every single week. A source past the cutoff
+never gets "another shot," so leaving its items unmarked doesn't preserve a
+chance — it guarantees the unbounded weekly resubmission this whole rule
+exists to prevent (see the undated-item argument above).
+
+**The cap binds on every full run** (measured from `logs/`, counting API
+calls per stage): 2026-08-16 → 12 filter requests (441–480 candidates) → **60
+score requests = exactly `max_survivors`**; 2026-08-15 → 60 as well. Only the
+`--limit-sources` run of 2026-07-18 came in under (9).
+
+**Consequence, and it is worse than the seen-set question:** the 60 survivors
+of the Aug 16 run run out around source row 14 (Hacker News). The six
+manual-only feeds added specifically to fix the delivery-economics gap —
+Economist ×3 and WSJ ×3 — sit at rows 46–51 and were **never scored at all**.
+Fixing the cap's ordering comes before deciding how to mark its casualties;
+`docs/stage4-send-plan.md` §0.7 carries the proposal.
+
+**Related open question — the cheap filter is far more permissive than the
+design assumed.** Aug 16: **312 of 441 candidates passed (~71%)**, against a
+design intent of roughly 50 survivors reaching the expensive stage. That is
+why the cap binds so hard: `max_survivors` isn't a rare circuit-breaker, it
+is the load-bearing cost control, and the filter is barely filtering. Two
+readings, not yet distinguished: the filter prompt is too lenient, or
+title + 300-char excerpt genuinely isn't enough signal to reject on (the
+stage is deliberately "permissive, not precise", and it fails open). **Not
+being fixed now** — round-robin interleaving (§0.7) makes the cap's cut
+fair, which is the urgent half. Tightening the filter changes what gets
+scored at all and wants its own UAT pass. Recorded so the ~71% isn't
+rediscovered as a surprise.
 
 **A failed run needs no retry machinery.** Not committing the seen-set *is*
 the retry: the items were never consumed, so the next run re-ingests them
@@ -248,10 +283,12 @@ without new evidence.
 machinery is doing its job: org section is all independent-analysis/news
 (no vendor junk), fluency section is real practitioner content, ranking is
 explainable (score + reason per item). Remaining known gaps: the org
-section skews AI-industry macro rather than delivery-economics (accepted —
-that content is genuinely scarce week to week; Economist feed now fixed to
-maximize the chance); HBR feed blocked at TLS; and the whole SEND/deploy
-half (stage 4 send + stage 5) not started. Detail below.
+section skews AI-industry macro rather than delivery-economics — **the
+"content is genuinely scarce" explanation is at best partial**, because the
+`max_survivors` cap cuts in source order and the Economist/WSJ feeds sit at
+the end of the source list, so they have never once been scored (see the
+Seen-set commit rule section); HBR feed blocked at TLS; and the whole
+SEND/deploy half (stage 4 send + stage 5) not started. Detail below.
 
 **Stage 1 (ingest + dedupe) — built, logic verified, not yet pytest-clean.**
 
@@ -456,9 +493,7 @@ view with an in-place counter for the slow parts (fetch, batch polling),
 and routes all verbose detail to a timestamped `logs/run-*.log` (path
 printed at the end). `--verbose` mirrors full detail to the console.
 `fetch_all` gained an `on_progress` callback and `run_batch` an `on_poll`
-callback purely to drive those progress lines (no effect on results). NOTE:
-the first run's pasted output still showed the OLD format because it
-predated this change — the clean output applies from the next run on.
+callback purely to drive those progress lines (no effect on results).
 
 **Stage 4a (render) — built.** `pipeline/render.py`: `render_email_html()`
 (the reader-facing email — For the org / For you / Considered & skipped,
@@ -496,8 +531,13 @@ file-by-file changes, test strategy, build order — is in
   AI-industry macro (lab valuations, DeepMind leadership churn, capex) —
   because the sources that carry true delivery-economics content (HBR, WSJ
   CIO Journal, Economist, Gartner) all fail to fetch (paywalled/JS), so the
-  free pool skews to AI-industry news. User's call: **AI-industry macro is
-  fine.** `org_score` now rewards two kinds: (a) delivery economics
+  free pool skews to AI-industry news. **Partly superseded 2026-08-20:** WSJ
+  and Economist now fetch fine — they are cut by the `max_survivors` source-
+  order slice before scoring, which is a pipeline bug, not source scarcity.
+  Re-run this UAT judgment once §0.7 lands; the rubric decision below may
+  have been made against an artificially impoverished pool. User's call at
+  the time: **AI-industry macro is fine.** `org_score` rewards two kinds:
+  (a) delivery economics
   directly (highest), (b) AI-industry strategic context a delivery leader
   should track (solid). Still down-ranks implementation/how-to hard.
 - **Future bolt-on (user idea, not started):** an "application to other
@@ -579,8 +619,14 @@ file-by-file changes, test strategy, build order — is in
     if a *future* wanted source is truly email-only.
   - **Gartner — likely stays out** (gated research, no useful feed/newsletter).
   - **First real run WITH the business-press feeds (Aug 16) — outcome:**
-    - **WSJ (all 3): WORKS** — classified `rss`, fetching fine. Just didn't
-      crack the top this week.
+    - **WSJ (all 3): fetch WORKS** — classified `rss`, fetching fine.
+      ~~Just didn't crack the top this week.~~ **Corrected 2026-08-20: they
+      never reached the scoring stage.** They are manual-only sources, so
+      `ingest.load_sources()` appends them at rows 46–51, and
+      `passed[:max_survivors]` cuts in source order at ~row 14. Same for all
+      three Economist feeds. Nothing about their content was ever judged.
+      See the Seen-set commit rule section and `docs/stage4-send-plan.md`
+      §0.7.
     - **Economist (all 3): was BROKEN, now FIXED.** Root cause: `feedparser`
       does its OWN http fetch with a bot User-Agent — it never used the
       browser UA on the httpx client. The Economist 403'd feedparser even

@@ -104,15 +104,16 @@ incident where 22 of 27 responses were dropped to `max_tokens` truncation.
 Marking those seen would permanently bury content on the basis of a
 truncation bug, with no symptom.
 
-The same argument covers a case the review didn't raise: `run.py:179` does
-`survivors = passed[:CONFIG.max_survivors]`. Items the filter **passed** but
-the cap then cut were never scored either. Filter-rejected items were
-judged and found wanting; cap-cut and parse-failed items were judged
-*worth scoring* and then dropped for reasons that have nothing to do with
-their merit. Both belong in the never-marked set.
-
 Hence the positive formulation above: everything except *"the filter said yes
 and we never got a score."*
+
+**Withdrawn: the `max_survivors` half of this argument.** An earlier version
+of §0.3(b) extended the same reasoning to `run.py:179`
+(`survivors = passed[:CONFIG.max_survivors]`), on the premise that the cap
+cuts "for reasons that have nothing to do with their merit" and so cap-cut
+items should also go unmarked. Verified 2026-08-20 — the premise is false and
+it inverts the conclusion. See **§0.7**, which has to be resolved before this
+rule can be finalised for that subset.
 
 ### 0.4 The Media-stub stretch goal implies an outbox layout decision
 
@@ -185,11 +186,143 @@ the cut" when the truth was "22 responses were truncated mid-JSON."
 **Fix:** split into `filtered_out_count` (filter rejects only, reader-facing,
 unchanged wording) and `scoring_failed_count` (never scored).
 
-Deliberate choice: `scoring_failed_count` goes to the **console and log,
-loudly — not into the email body**. The reader doesn't benefit from pipeline
-diagnostics in a curated digest, and the degraded-run floor (§1.7) already
-gates the case where the number is large enough to matter. A small nonzero
-count on an otherwise healthy run is a log concern.
+**Where `scoring_failed_count` surfaces — revised 2026-08-20. It goes in the
+email footer.** The original decision here was console + log only, on the
+argument that a reader doesn't want pipeline diagnostics in a curated digest
+and the degraded-run floor (Q7) already catches anything large. Both halves
+were wrong for this deployment:
+
+- **There is no reader who isn't the operator.** §4.1 fixes recipients at one
+  address — the user's own. A log on the Pi, written at 6am by an unattended
+  systemd unit, is not an artifact anyone reads. The email is the only thing
+  that is reliably read, so it is the only place a signal actually lands.
+- **The floor is a catastrophe detector, not a drift detector.** It fires at
+  >30%. Measured from `logs/`: **2026-08-15 → 14/60 failures (23%);
+  2026-08-16 → 9/60 (15%)**. Both are the current steady state, both send
+  silently under the original rule, and both quietly discard a seventh to a
+  quarter of everything that got as far as scoring. This is not a
+  hypothetical slow drift — it is what the pipeline is doing right now.
+
+**Spec:** one line in the footer of both the HTML and plaintext parts,
+rendered **only when `scoring_failed_count > 0`**, silent otherwise, so a
+healthy week reads clean:
+
+> ⚠ 9 of 60 items could not be scored this week and were dropped (15%).
+
+Visually de-emphasised (small, muted) and placed after "Considered and
+skipped" — an operator note, not content.
+
+**It must carry the denominator.** A bare "9 items could not be scored" is
+unjudgeable; 9-of-12 and 9-of-300 want opposite responses. `Selection`
+therefore gains `score_attempted_count` alongside `scoring_failed_count`
+(`= len(outcome.scored) + len(outcome.failures)`, the same `n` Q7's floor
+divides by — one source of truth for both).
+
+**Recommended alongside it, flagged as a separate call:** the same footer is
+the right home for the `max_survivors` cap count once §0.7 is settled
+(*"60 of 312 items that passed the filter were scored (cap)"*). Same
+argument, and per §0.7 it is currently the larger silent loss of the two.
+Not folded into this line — different failure, different number.
+
+### 0.7 The `max_survivors` cap cuts by source position, and it binds every run — OPEN, needs a decision
+
+Added 2026-08-20. This is a **proposal, not a decision** — it changes ranking
+behaviour, which is the user's call, and nothing here is built.
+
+**What was checked.** `run.py:179` is `survivors = passed[:CONFIG.max_survivors]`
+(default 60). `passed` comes from `parse_filter_results`, which writes
+verdicts into a list indexed by candidate position and returns it in that
+order; `dedupe()` also preserves input order; `fetch_all` appends per source
+in source order. `FilterVerdict` carries only `passed: bool` and a reason
+string — **there is no filter score to rank by, and none is requested from
+the model.**
+
+**So the cap is not arbitrary. It is positional and deterministic:**
+`sources.tsv` row order, then feed order within a source. Manual-only sources
+are appended last by `ingest.load_sources()` (name collisions override in
+place; manual-only entries go on the end, `ingest.py:105`).
+
+**It binds on every full run.** Counted from the API calls in `logs/`
+(filter and score requests are distinguishable by the article-text GETs
+between them):
+
+| Run | Filter requests | ⇒ candidates | Score requests |
+|---|---|---|---|
+| 2026-08-16 | 12 | 441–480 | **60** = `max_survivors` |
+| 2026-08-15 | 11 (+4 stray) | ~440 | **60** = `max_survivors` |
+| 2026-07-18 (`--limit-sources`) | 9 | ~350 | 9 — cap not reached |
+
+`build_score_requests` emits exactly one request per survivor with no
+skipping, so 60 score requests means 60 survivors means the cap bound exactly.
+
+**The consequence is bigger than the seen-set question.** Walking the
+article-text fetches of the 2026-08-16 run in order, the 60 survivors are
+Azure → GCP → Bay Area Times → Stratechery → TBPN → Exponential View →
+TechMeme → AI Newsletter → The Neuron → Hacker News, and stop there — around
+**source row 14 of 51**. The six manual-only feeds added specifically to fix
+the delivery-economics gap (Economist ×3, WSJ ×3) sit at rows 46–51 and
+**have never been scored, on any run**. CLAUDE.md's note that WSJ "just
+didn't crack the top this week" was wrong; nothing about them was judged.
+High-volume sources near the front (Bay Area Times ~13 items, The Neuron ~10)
+consume the budget before the tail is reached.
+
+Two smaller instances of the same root cause, worth noting but not fixing
+separately: `dedupe()`'s cross-source clustering keeps the *first* occurrence,
+which again privileges earlier sources; and `sources.tsv` has a duplicate
+`TBPN` row (rows 6 and 37).
+
+**What this does to §0.3.** The rule's premise for cap-cut items — dropped
+for reasons unrelated to merit, therefore leave them unmarked so they get
+another shot — assumes the cut is re-rolled each week. It isn't. A source
+past the cutoff loses every week, forever. So not marking them does not
+preserve a chance; for the **undated** listing-scraped items among them it
+guarantees exactly the unbounded weekly resubmission §0.3(a) exists to
+prevent. Both branches of the rule break on the same defect, which is why
+this is a prerequisite rather than a footnote.
+
+**Proposal: fix the ordering, not the marking.** Interleave `passed`
+round-robin by source before applying the cap — take one item from each
+source in turn until 60 are collected, preserving within-source order.
+
+```python
+# passed is in source order, so a flat slice always cuts the same tail of
+# sources.tsv. Round-robin instead: every source gets representation, and a
+# high-volume feed at the top can't consume the whole budget.
+survivors = _interleave_by_source(passed)[: CONFIG.max_survivors]
+```
+
+Roughly five lines, no prompt change, no extra API spend, no new state. It
+makes the §0.3 premise *true*: the cut becomes genuinely merit-neutral and
+re-rolls week to week as feed contents change, so leaving cap-cut items
+unmarked really does give them another shot — and §0.3 then stands as written
+for that subset, with no special case.
+
+Rejected alternatives:
+
+- **Raise `max_survivors`.** Moves the boundary without removing the bias,
+  and cost scales linearly with it — scoring all ~312 filter-passers would be
+  ~5× the current ~$1/run and would trip the $5 `cost_ceiling_usd`.
+- **Have the filter emit a relevance score to rank by.** Ranking by filter
+  score is the principled fix in the abstract, but that stage is deliberately
+  "permissive, not precise" and sees title + 300-char excerpt only, so its
+  scores would be a weak ranking signal bought with a prompt change and more
+  output tokens. Reconsider only if round-robin proves insufficient.
+
+**Bounding check on the undated-item leak after round-robin.** With ~44
+live sources and 60 slots, each source gets 1–2 slots per run. A high-volume
+feed then accumulates a backlog — but those items are *dated*, so
+`fetch_max_age_days` (10) ages them out; the backlog is bounded by recency,
+not by the seen-set. The genuinely undated items come from static listing
+pages (Paul Graham's essays, etc.), whose contents don't grow, so a fixed
+set of ~N items drains at 1–2/week and then stays drained. Both directions
+bounded — **no cap-cut counter, no extra state file needed.** That claim is
+the thing to re-check after the first post-fix run, not to assume.
+
+**Sequencing.** This is a stage-3 ranking change, not stage-4 send work. It
+belongs before step 3 in §6 because §0.3's mark-seen set depends on its
+outcome, and it wants its own UAT pass (does the org section actually improve
+once Economist and WSJ can be scored?) before anything gets committed to a
+seen-set permanently.
 
 ---
 
@@ -477,9 +610,12 @@ this is ~10 lines. Cost is 9 mechanical test call-sites
 append `.scored`) plus `run.py:210`. No logic change.
 
 **`pipeline/select.py` + `pipeline/render.py`** — split the count per §0.6.
-`Selection` gains `scoring_failed_count`; `filtered_out_count` narrows to
-filter rejects only. `render.py:92-93` wording unchanged (it now tells the
-truth). `tests/test_select.py:93` and `tests/test_render.py:32` touched.
+`Selection` gains `scoring_failed_count` **and `score_attempted_count`** (the
+denominator the footer line needs); `filtered_out_count` narrows to filter
+rejects only. `render.py:92-93` wording unchanged (it now tells the truth).
+Both `render_email_html()` and `render_email_text()` gain the conditional
+operator footer line of §0.6 — emitted only when `scoring_failed_count > 0`.
+`tests/test_select.py:93` and `tests/test_render.py:32` touched.
 
 **`pipeline/config.py`**
 
@@ -702,8 +838,9 @@ same-filesystem and genuinely atomic. Stage 5's rsync should still filter
 
 ```python
 # §0.3: everything EXCEPT "the filter said yes and we never got a score".
-# Excluded: max_survivors-capped items and score-stage failures -- both were
-# judged worth scoring, then dropped for reasons unrelated to their merit.
+# Excluded: score-stage failures (parse_score_results fails closed) and,
+# PENDING §0.7, max_survivors-capped items. The cap-cut exclusion is only
+# defensible once the cap stops cutting by source position -- see §0.7.
 mark_seen_candidates = (
     dropped                                              # fuzzy dupes + already-seen
     + [v.candidate for v in verdicts if not v.passed]    # filter-rejected: judged
@@ -797,7 +934,10 @@ Mark-seen set:
 
 - Filter-rejected and successfully-scored items are marked.
 - **Score-stage failures are NOT marked.**
-- **`max_survivors`-capped items are NOT marked.**
+- **`max_survivors`-capped items are NOT marked** — write this test only
+  after §0.7 lands. As things stand it would lock in a rule whose premise is
+  false (the cap cuts by source position, so the same tail is excluded every
+  week and never marked, forever).
 - Fuzzy-dropped duplicates are marked.
 - Re-marking an already-seen item preserves the original `first_seen`.
 
@@ -811,7 +951,12 @@ Cost:
 
 - `render_email_text` contains every item title and URL, and has **no** YAML
   frontmatter.
-- `scoring_failed_count` does **not** leak into the email HTML (§0.6).
+- **`scoring_failed_count == 0` → no operator line in either part.** A healthy
+  week's email carries no diagnostics at all.
+- **`scoring_failed_count > 0` → the line appears in both the HTML and
+  plaintext parts, and carries the denominator** (a 9/60 fixture renders both
+  "9" and "60"). §0.6's revision as an executable assertion; the original
+  version of this bullet asserted the opposite.
 
 ### Manual smoke tests (Mac, network, in order)
 
@@ -836,6 +981,7 @@ Each step ends green; only step 8 needs network.
 | # | Step | Why here |
 |---|---|---|
 | 0 | CLAUDE.md fixes §0.1–0.4 (docs-only commit) | Done before code, while the reasoning is loaded. |
+| 0b | **§0.7 — decide and land the cap-ordering fix, then a UAT run** | Blocks step 3: §0.3's mark-seen set is undefined for cap-cut items until the cap stops cutting by source position. Stage-3 ranking change; wants its own UAT before anything commits to a seen-set permanently. |
 | 1 | `encoding="utf-8"` on all 11 sites | Independent, mechanical, zero risk. Retires §0.5. |
 | 2 | `config.py` additions, `.env.example`, `.gitignore` | Everything downstream reads config. No behaviour change. |
 | 3 | `ScoreOutcome` + `scoring_failed_count` split (+ 11 test call-site updates) | **Prerequisite for §0.3(b) and Q7.** Must precede `deliver.py`. Mechanical, no logic change. |
