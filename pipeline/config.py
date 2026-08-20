@@ -136,5 +136,66 @@ class Config:
     select_fluency_count: int = int(os.environ.get("AI_DIGEST_SELECT_FLUENCY_COUNT", "3"))
     select_skipped_cap: int = int(os.environ.get("AI_DIGEST_SELECT_SKIPPED_CAP", "15"))
 
+    # --- Stage 4: email delivery ---
+
+    # iCloud SMTP. 587/STARTTLS is Apple's documented config; 465/implicit-SSL
+    # is also widely reported to work -- flip smtp_use_ssl and the port if 587
+    # misbehaves. Neither has been tested against this account yet.
+    smtp_host: str = os.environ.get("AI_DIGEST_SMTP_HOST", "smtp.mail.me.com")
+    smtp_port: int = int(os.environ.get("AI_DIGEST_SMTP_PORT", "587"))
+    smtp_use_ssl: bool = os.environ.get("AI_DIGEST_SMTP_USE_SSL", "").lower() in ("1", "true", "yes")
+    smtp_timeout_seconds: int = int(os.environ.get("AI_DIGEST_SMTP_TIMEOUT", "30"))
+
+    # Comma-separated (a single recipient today; keeping it a list means
+    # adding someone later is env-only, with no Bcc branch to maintain).
+    # digest_from MUST be an address the iCloud account owns, or iCloud
+    # answers with a hard 550 -- the likeliest first-run failure.
+    digest_to: str = os.environ.get("AI_DIGEST_TO", "")
+    digest_from: str = os.environ.get("AI_DIGEST_FROM", "")
+
+    # Retry: weekly cadence, zero latency pressure, so wide gaps cost nothing
+    # -- and greylisting / IP-reputation throttling (the "finicky about an
+    # unfamiliar Pi outbound IP" risk) clears over minutes, not milliseconds.
+    smtp_max_attempts: int = int(os.environ.get("AI_DIGEST_SMTP_MAX_ATTEMPTS", "3"))
+    smtp_backoff_seconds: str = os.environ.get("AI_DIGEST_SMTP_BACKOFF", "5,30,120")
+
+    # Degraded-run floor. A RATE, not an item count: this measures whether the
+    # scoring stage WORKED, not whether the news was interesting. A thin week
+    # is real content and must still commit; a crashed scoring stage must not.
+    # 0.30 sits between a healthy run (~0%) and the one observed breakage
+    # (22/27 = 81%). min_sample stops a small --limit-sources run tripping on
+    # one odd response.
+    score_failure_rate_ceiling: float = float(
+        os.environ.get("AI_DIGEST_SCORE_FAILURE_CEILING", "0.30")
+    )
+    score_failure_min_sample: int = int(os.environ.get("AI_DIGEST_SCORE_FAILURE_MIN_SAMPLE", "5"))
+
+    # Dry-run artifacts. Kept OUT of outbox_dir on purpose: stage 5 rsyncs
+    # outbox/ into the vault, so a preview left there would be archived as if
+    # it had actually been delivered.
+    preview_dir: Path = _path("AI_DIGEST_PREVIEW_DIR", "preview")
+
+    # Whether a successful --apply run PERSISTS the seen-set (dedupe.SeenStore
+    # .save()). Ships DISABLED, deliberately, and this is not a stage-4 defect
+    # -- stage 4's whole commit path (ordering, rollback, the degraded floor,
+    # the mark/don't-mark rule) is built and tested; only the final persist is
+    # skipped.
+    #
+    # WHY: today nothing is lost permanently, because the seen-set is never
+    # committed -- every dropped item returns next week. But the pipeline has
+    # two known defects that silently discard content: score-stage failures
+    # running 15-23% per run, and (until the round-robin fix lands a UAT pass)
+    # a positional max_survivors cap that meant the Economist and WSJ feeds
+    # were never scored at all. Committing the seen-set converts both from
+    # "deferred a week" into permanent deletion. Ship the email first, fix
+    # those, then flip this on -- not the reverse.
+    commit_seen: bool = os.environ.get("AI_DIGEST_COMMIT_SEEN", "").lower() in ("1", "true", "yes")
+
+    # DELIBERATELY ABSENT from this dataclass: SMTP_USERNAME and
+    # SMTP_APP_PASSWORD. Config is frozen and its repr lands in tracebacks and
+    # is trivially printed while debugging; a password has no business there.
+    # send.py reads both from os.environ at point of use instead -- Keychain
+    # on the Mac (via scripts/run_with_secrets.sh), .env on the Pi.
+
 
 CONFIG = Config()
