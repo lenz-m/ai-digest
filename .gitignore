@@ -1,4 +1,9 @@
 .env
+# ~/.gitignore_global has `.env.*`, which swept up .env.example too -- so the
+# template CLAUDE.md says is "committed" had in fact never been tracked. A
+# per-directory .gitignore outranks core.excludesFile, so this re-includes it.
+# The Pi's setup depends on this file; it holds placeholders only.
+!.env.example
 .venv/
 logs/
 outbox/
