@@ -175,6 +175,21 @@ class Config:
     # it had actually been delivered.
     preview_dir: Path = _path("AI_DIGEST_PREVIEW_DIR", "preview")
 
+    # The last run's scored items, dumped so --render-only can re-render a
+    # digest without re-calling the API (~$0.64 and several minutes a pass).
+    # DERIVED DATA, not hand-authored config: it holds full summaries and
+    # scores for ~60 articles. It must stay inside .gitignore's `cache/*`
+    # rule -- do NOT add a `!cache/last_run_scored.json` exception next to the
+    # ones for trust_tiers.json and fetch_strategy.json, which are the
+    # opposite kind of file (hand-edited, deliberately versioned).
+    scored_cache: Path = _path("AI_DIGEST_SCORED_CACHE", "cache/last_run_scored.json")
+
+    # How old a replayed run can be before --render-only escalates its
+    # provenance line to a loud warning. A replay renders LAST week's news
+    # under this week's eye; the whole failure mode is forgetting which run
+    # you are looking at.
+    replay_stale_days: int = int(os.environ.get("AI_DIGEST_REPLAY_STALE_DAYS", "7"))
+
     # Whether a successful --apply run PERSISTS the seen-set (dedupe.SeenStore
     # .save()). Ships DISABLED, deliberately, and this is not a stage-4 defect
     # -- stage 4's whole commit path (ordering, rollback, the degraded floor,

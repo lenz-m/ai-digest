@@ -24,18 +24,29 @@ file under logs/ instead of scrolling the terminal -- the run prints that
 path at the end, so "paste me the log" is one `cat` rather than a scroll-
 back hunt. Use --verbose to also mirror the full detail to the console.
 
+EVERY RUN DUMPS ITS SCORED ITEMS to cache/last_run_scored.json, --apply
+included, and --render-only re-renders them with no fetching and no API calls
+at all. The scored items are the only thing a run produces that costs real
+money and cannot be reproduced, and until this existed nothing about a run
+survived it: a digest that raised a question could not be re-examined once the
+process exited, and every presentation change cost a full re-run to see
+against real content. --render-only needs no secrets, so it does not need
+run_with_secrets.sh.
+
 Usage:
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --limit-sources 5
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --verbose
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --apply
     ./scripts/run_with_secrets.sh uv run python -m pipeline.run --apply --to me@icloud.com
+    uv run python -m pipeline.run --render-only        # replay, no spend
 
 Exit codes: 0 delivered (or dry run), 1 send failed / degraded run refused,
-2 bad invocation, 3 aborted -- account-level API failure (no credit, bad key,
-bad model id). 3 is separate from 1 on purpose: on the Pi nobody reads the
-console, and "top up credits" and "SMTP is broken" want different responses
-from whatever notices the non-zero exit.
+2 bad invocation (including --render-only with no usable cache), 3 aborted --
+account-level API failure (no credit, bad key, bad model id). 3 is separate
+from 1 on purpose: on the Pi nobody reads the console, and "top up credits"
+and "SMTP is broken" want different responses from whatever notices the
+non-zero exit.
 """
 from __future__ import annotations
 
@@ -52,7 +63,7 @@ from pipeline.api_errors import FatalAPIError
 from pipeline.config import CONFIG, ROOT
 from pipeline.cost import BudgetExceededError, CostTracker
 from pipeline.dedupe import SeenStore, candidate_from_raw_item, dedupe
-from pipeline.deliver import deliver
+from pipeline.deliver import deliver, write_previews
 from pipeline.email_build import parse_addrs
 from pipeline.fetch import fetch_all, fetch_article_texts
 from pipeline.filter_stage import (
@@ -63,6 +74,13 @@ from pipeline.filter_stage import (
 )
 from pipeline.ingest import load_sources
 from pipeline.llm_client import run_batch, run_sync
+from pipeline.replay import (
+    ReplayError,
+    RunCounts,
+    load_scored_run,
+    provenance_lines,
+    save_quietly,
+)
 from pipeline.score_stage import SCORE_SYSTEM_PROMPT, build_score_requests, parse_score_results
 from pipeline.select import select
 from pipeline.send import SendError, send_message
@@ -145,6 +163,13 @@ def main() -> int:
         "max_survivors cap still drop content, and persisting turns those "
         "from 'returns next week' into permanent deletion.",
     )
+    parser.add_argument(
+        "--render-only",
+        action="store_true",
+        help="Re-render the LAST run's scored items from cache/last_run_scored.json "
+        "and stop. No fetching, no API calls, no spend. For iterating on "
+        "presentation, or re-examining a digest that raised a question.",
+    )
     args = parser.parse_args()
 
     # --apply with a truncated source list would send a junk digest built from
@@ -157,6 +182,28 @@ def main() -> int:
             "partial digest built from only the first few sources"
         )
 
+    # --render-only replays judgments made in a PAST run, from a cache with no
+    # upper age bound. Every one of these flags means "act on the world", and
+    # acting on stale cached judgments is the one thing this path must never
+    # do: --apply would mail out last fortnight's news, --commit-seen would
+    # permanently bury items on the strength of a replay. The other two are
+    # merely meaningless (nothing is fetched, no API is called) but refusing
+    # beats accepting-and-ignoring, which reads as if it did something.
+    conflicting = [
+        name for name, on in (
+            ("--apply", args.apply),
+            ("--commit-seen", args.commit_seen),
+            ("--limit-sources", bool(args.limit_sources)),
+            ("--sync", args.sync),
+        ) if on
+    ]
+    if args.render_only and conflicting:
+        parser.error(
+            f"--render-only cannot be combined with {', '.join(conflicting)}: it "
+            "replays a past run's cached judgments offline -- it fetches nothing, "
+            "calls no API, sends nothing and commits nothing."
+        )
+
     log_path = _setup_logging(args.verbose)
     prog = _Progress(enabled=not args.verbose)
 
@@ -164,6 +211,11 @@ def main() -> int:
     # it -- including when the run dies before the digest is ever printed.
     cost_tracker = CostTracker()
     try:
+        if args.render_only:
+            # Deliberately inside the same try/finally: the cost report then
+            # prints "0 API call(s), $0.0000", which is the claim this flag
+            # makes and worth seeing demonstrated rather than asserted.
+            return _render_only(log_path)
         return _run(args, log_path, prog, cost_tracker)
     finally:
         # CLAUDE.md's cost-discipline section requires every run to print AND
@@ -184,6 +236,50 @@ def _emit_cost_report(cost_tracker: CostTracker) -> None:
     # One log record, not one per line, so the report stays greppable as a
     # unit ("grep -A3 'cost report'").
     logger.info("cost report (%d call(s) recorded): %s", len(cost_tracker.records), report)
+
+
+def _render_only(log_path) -> int:
+    """Re-render the last run's scored items. No network, no API, no spend.
+
+    Runs select() again rather than replaying a stored Selection, so changes to
+    select_org_count / select_fluency_count / skipped_cap take effect too --
+    see replay.py for why the inputs are what get persisted.
+    """
+    try:
+        payload = load_scored_run()
+    except ReplayError as e:
+        print(f"\nCANNOT REPLAY: {e}")
+        print(f"\nlog: {log_path}")
+        return 2
+
+    print("ai-digest RENDER-ONLY  [replay from cache -- no fetching, no API calls]")
+    for line in provenance_lines(payload):
+        print(f"  {line}" if line else "")
+    print()
+
+    selection = select(payload.scored, **payload.counts.as_kwargs())
+    print(f"select            {len(selection.for_org)} for org, {len(selection.for_you)} for you")
+
+    _print_digest(selection)
+
+    result = write_previews(selection, payload.run_at)
+    html, note, _txt = result.preview_paths
+
+    print(f"\nlog:            {log_path}")
+    print(f"email preview:  {html}   <- open this to see the actual digest")
+    print(f"vault note:     {note}")
+    print(
+        "(replay -- nothing fetched, nothing sent, outbox untouched, seen-set "
+        "not touched.)"
+    )
+    if payload.is_stale():
+        # Repeated after the digest on purpose: the warning above has by now
+        # scrolled off the top of a 60-item debug dump.
+        print(
+            f"\n*** These are the stories from {payload.age_days()} DAYS AGO. "
+            "Re-read the provenance line at the top. ***"
+        )
+    return 0
 
 
 def _run(args, log_path, prog, cost_tracker: CostTracker) -> int:
@@ -296,8 +392,8 @@ def _run(args, log_path, prog, cost_tracker: CostTracker) -> int:
         return _abort(e, "score", log_path)
 
     outcome = parse_score_results(score_requests, survivors, score_results, trust_store=trust_store)
-    selection = select(
-        outcome.scored,
+
+    counts = RunCounts(
         # Filter REJECTS only. This number is shown to the reader as "N more
         # filtered below the cut", i.e. as curation -- so cap losses and
         # scoring failures must be counted separately, not folded in here.
@@ -306,6 +402,18 @@ def _run(args, log_path, prog, cost_tracker: CostTracker) -> int:
         score_attempted_count=outcome.attempted,
         filter_passed_count=len(passed),
     )
+    # Dumped HERE -- after the money has been spent, before select() and
+    # deliver() get a chance to raise. Everything downstream is pure logic or
+    # I/O we can retry for free; the scored items are the only thing in this
+    # process that cost ~$0.64 and cannot be reproduced. A crash in rendering
+    # or delivery must not take them with it. save_quietly() swallows its own
+    # failures so this can never be what breaks a send.
+    save_quietly(outcome.scored, counts, applied=args.apply, log_path=str(log_path))
+
+    # Same counts object the cache just stored, not a second computation of
+    # the same four numbers -- a replay must render the SAME operator
+    # diagnostics the live run did, and two copies could drift apart.
+    selection = select(outcome.scored, **counts.as_kwargs())
     prog.done(f"[6/6] select      {len(selection.for_org)} for org, {len(selection.for_you)} for you")
 
     _print_digest(selection)

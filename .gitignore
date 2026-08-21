@@ -14,6 +14,12 @@ __pycache__/
 data/*
 !data/manual_sources.tsv
 
+# The two exceptions below are HAND-AUTHORED CONFIG (feed overrides, trust
+# tiers, human_override entries) that happens to live in cache/ -- that is the
+# only reason they are tracked. Everything else here is derived output and
+# stays ignored. In particular cache/last_run_scored.json holds full article
+# summaries and scores for ~60 items from the last run: derived data, rewritten
+# every run, never to be committed. Do not add an exception for it.
 cache/*
 !cache/trust_tiers.json
 !cache/fetch_strategy.json

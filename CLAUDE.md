@@ -325,6 +325,9 @@ Remaining known gaps:
 
 - **The seen-set is not persisted** (`commit_seen` ships off, deliberately —
   see Stage 4b–d below). Every run therefore re-ingests everything.
+- **Presentation is now free to iterate on** — `--render-only` replays the
+  last run's scored items offline, so a header/layout change no longer costs
+  a ~$0.64 re-run to see against real content. See the Replay section below.
 - ~~**Score-stage failures run 15–23% per run**, undiagnosed~~ —
   **DIAGNOSED AND FIXED 2026-08-20.** The Aug 20 log settled it, and the
   headline number was measuring two unrelated things at once. See "Score-stage
@@ -708,6 +711,64 @@ against a real run yet. The gate stays off until one is.)
 While the seen-set never persists, both merely defer an item a week; the
 moment it persists, both become permanent deletion. Ship the email first,
 fix those, then flip it on.
+
+## Replay: `--render-only` (built 2026-08-21)
+
+**Every run dumps its scored items to `cache/last_run_scored.json`, `--apply`
+included; `uv run python -m pipeline.run --render-only` re-renders them with
+no fetching and no API calls.** `pipeline/replay.py`.
+
+**Why:** nothing about a run used to survive it. `ScoredItem` lived in memory,
+the rendered previews were the only artifact on disk, and the logs carry a
+response body only when parsing *failed*. So a digest that raised a question
+("why did THAT rank first?") could not be re-examined once the process exited,
+and every presentation change cost a full ~$0.64 re-run to see against real
+content. The scored items are the only thing a run produces that costs real
+money and can't be reproduced.
+
+Decisions worth not relitigating:
+
+- **The cache stores the INPUTS to `select()`** — the scored items plus the
+  four Selection counts — never a rendered `Selection`. A replay therefore
+  re-runs `select()` and reflects the *current* `select_org_count` /
+  `select_fluency_count` / `skipped_cap`, so the cache is useful for tuning
+  selection too, not only rendering. `select()` is pure, so an unchanged
+  config reproduces the original digest exactly
+  (`test_replay_reproduces_the_live_selection_exactly`).
+- **The four counts are not optional.** They drive the footer's operator
+  diagnostics ("9 of 60 could not be scored", "60 of 312 scored (cap)").
+  Replaying without them renders a digest that looks *healthy* when the
+  original run was not — silently converting the exact defect those lines
+  exist to surface into an invisible one. `run.py` builds one `RunCounts` and
+  passes the same object to both the cache and `select()`, so the two can't
+  drift.
+- **Written after the score stage, before `select()`.** Everything downstream
+  is pure logic or retryable I/O; a crash in rendering or delivery must not
+  take the scored items with it. `save_quietly()` swallows its own failures —
+  it writes moments before an `--apply` run sends, and losing the cache costs
+  one re-run while letting it abort the send costs the week.
+- **`--render-only` refuses `--apply`, `--commit-seen`, `--limit-sources` and
+  `--sync`** (exit 2). The first two are the safety property: the cache has no
+  upper age bound, so `--apply` would mail out a fortnight-old digest and
+  `--commit-seen` would permanently bury items on the strength of a replay.
+- **Staleness is shouted, not just printed.** A replay's output is shaped
+  identically to a fresh run — nothing in the digest says the news is old.
+  Past `AI_DIGEST_REPLAY_STALE_DAYS` (default 7) the provenance block prints a
+  loud warning, repeated after the digest because by then the first one has
+  scrolled off the top of a 60-item debug dump.
+- **`cache/last_run_scored.json` is DERIVED DATA and must stay gitignored.**
+  It holds full summaries and scores for ~60 articles. `.gitignore`'s `cache/*`
+  rule covers it; the two `!` exceptions next to it (`trust_tiers.json`,
+  `fetch_strategy.json`) are the opposite kind of file — hand-edited config
+  that happens to live in `cache/`. Do not add a third exception.
+- `deliver._write_previews` became public `deliver.write_previews` so the
+  replay path can call it without fabricating a `SeenStore` and `ScoreOutcome`
+  to reach the one branch that ignores them.
+
+**Operational note:** `--render-only` writes to `preview/`, overwriting
+whatever is there. `preview/` is gitignored and has no backup, so if a past
+run's preview is the only surviving copy of something, move it aside first (or
+set `AI_DIGEST_PREVIEW_DIR`) — the Aug 20 previews were lost this way.
 
 **The pipeline never touches the vault.** It writes markdown to `outbox/`
 and stops; rsync-into-vault and clear-outbox are the Mac's job in stage 5,

@@ -134,8 +134,13 @@ def _commit_seen(seen: SeenStore, candidates: list[Candidate], commit: bool) -> 
     return marked, True
 
 
-def _write_previews(selection: Selection, generated_at: datetime) -> DeliveryResult:
+def write_previews(selection: Selection, generated_at: datetime) -> DeliveryResult:
     """Dry-run artifacts go to preview_dir, NEVER outbox_dir.
+
+    Public because --render-only calls it directly. That path has no send, no
+    outbox write and no seen-set, so routing it through deliver() would mean
+    handing over a fabricated SeenStore and ScoreOutcome purely to reach the
+    one branch that ignores them.
 
     Stage 5's Mac-side job rsyncs outbox/ into the vault, so a preview left
     there would be archived as though it had actually been delivered. Keeping
@@ -177,7 +182,7 @@ def deliver(
         commit_seen = CONFIG.commit_seen
 
     if not apply:
-        return _write_previews(selection, generated_at)
+        return write_previews(selection, generated_at)
 
     # --- GATE 1: did the machinery work? ---
     # MUST precede the empty-selection branch below. A fully failed scoring
