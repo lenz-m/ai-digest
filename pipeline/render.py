@@ -2,15 +2,26 @@
 
 Two outputs, both pure functions (no I/O, no network -- fully testable):
   - render_email_html(): the actual email the reader receives. This is NOT
-    the run.py debug dump (scores/tiers/raw-titles for our vetting) -- it's
-    the clean reader experience, though it still shows the score + one-line
-    reason per item, because the spec requires ranking to be *explainable*
-    ("show the score and the reason, not a verdict").
+    the run.py debug dump (scores/tiers/raw-titles/reasons for our vetting) --
+    it's the clean reader experience. It shows the SCORE per item, so the
+    ranking is still explainable, but NOT the one-line reason: see
+    "Why the reason strings are not rendered" below.
   - render_vault_note(): the Obsidian archive note (markdown + frontmatter).
 
 run.py writes both to outbox/ as previews on every (dry-run) run, so the
 digest can be opened and vetted before send + vault-archive (the --apply
 half of stage 4) exist.
+
+Why the reason strings are not rendered
+---------------------------------------
+`org_reason` / `fluency_reason` are still produced by the score prompt, still
+carried on ScoredItem, and still printed by run.py's console/debug digest --
+they are the diagnostic for a bad ranking. They are just not in the reader's
+email or the vault note, where a per-item "Why it ranked: ..." line restated
+what the summary already said and pushed the actual content down the page.
+The score number stays in the meta line, so the ranking remains explainable.
+Re-adding them is a one-line change per format (see `_org_item_html` and its
+three siblings) -- keep it that cheap.
 """
 from __future__ import annotations
 
@@ -27,6 +38,38 @@ def _fmt_date(dt: datetime) -> str:
 
 
 # --------------------------------------------------------------------------
+# Section headers + one-line descriptions
+# --------------------------------------------------------------------------
+#
+# Defined once and shared by all three formats, so HTML / plaintext / vault
+# can't drift apart -- they are the same digest in three wrappers.
+#
+# The descriptions are derived from the RUBRICS (the org_score and
+# fluency_score definitions in CLAUDE.md), deliberately NOT from the header
+# names. A header can only ever be a label; the sentence under it is what
+# tells the reader what the section actually selects for -- which matters most
+# for the fluency section, where "For you" said nothing at all about the
+# technical-depth-over-news-coverage bar it is really ranking on.
+
+ORG_HEADER = "Delivery economics"
+ORG_BLURB = (
+    "Shifts in how delivery work gets staffed, priced and bought — plus the "
+    "AI-industry moves a delivery leader should be tracking."
+)
+
+FLUENCY_HEADER = "Practitioner depth"
+FLUENCY_BLURB = (
+    "Technical substance that builds understanding of how these systems "
+    "actually work, rather than coverage of what happened this week."
+)
+
+TAIL_HEADER = "Also consider"
+TAIL_BLURB = (
+    "Scored and worth knowing about, but ranked below the items above."
+)
+
+
+# --------------------------------------------------------------------------
 # Email (HTML)
 # --------------------------------------------------------------------------
 
@@ -36,7 +79,10 @@ _STYLE = """
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { color: #666; font-size: 13px; margin: 0 0 28px; }
   h2 { font-size: 16px; text-transform: uppercase; letter-spacing: 0.04em; color: #444;
-       border-bottom: 2px solid #eee; padding-bottom: 6px; margin: 32px 0 16px; }
+       border-bottom: 2px solid #eee; padding-bottom: 6px; margin: 32px 0 8px; }
+  /* Smaller than body text (14px) and muted -- it explains the section, it is
+     not part of it. */
+  .blurb { font-size: 12px; color: #777; line-height: 1.45; margin: 0 0 18px; }
   .item { margin: 0 0 22px; }
   .item .title { font-size: 16px; font-weight: 600; margin: 0 0 2px; }
   .item .title a { color: #0b3d91; text-decoration: none; }
@@ -44,11 +90,11 @@ _STYLE = """
   .item .summary { font-size: 14px; margin: 0 0 6px; }
   .item .sowhat { font-size: 14px; margin: 0 0 6px; }
   .item .sowhat b { color: #111; }
-  .item .why { font-size: 12px; color: #777; font-style: italic; margin: 0; }
   .badge { display: inline-block; font-size: 11px; font-weight: 600; color: #9a6700;
            background: #fff8e1; border: 1px solid #ffe8a3; border-radius: 3px; padding: 0 5px; margin-left: 6px; }
   .skipped { font-size: 13px; color: #555; }
   .skipped li { margin: 0 0 3px; }
+  .skipped a { color: #0b3d91; text-decoration: none; }
   .footer { color: #999; font-size: 12px; margin-top: 36px; border-top: 1px solid #eee; padding-top: 12px; }
   .opnote { color: #a08000; font-size: 11px; margin: 4px 0 0; }
 """
@@ -105,7 +151,6 @@ def _org_item_html(item) -> str:
     <p class="meta">{_ESC(item.source)} · org relevance {item.org_score}/100</p>
     <p class="summary">{_ESC(item.summary)}</p>
     {sowhat}
-    <p class="why">Why it ranked: {_ESC(item.org_reason)}</p>
   </div>"""
 
 
@@ -114,7 +159,6 @@ def _fluency_item_html(item) -> str:
     <p class="title"><a href="{_ESC(item.url)}">{_ESC(item.title)}</a></p>
     <p class="meta">{_ESC(item.source)} · fluency {item.fluency_score}/100</p>
     <p class="summary">{_ESC(item.summary)}</p>
-    <p class="why">Why it ranked: {_ESC(item.fluency_reason)}</p>
   </div>"""
 
 
@@ -124,8 +168,11 @@ def render_email_html(selection: Selection, generated_at: datetime | None = None
     org = "\n".join(_org_item_html(i) for i in selection.for_org) or "  <p>Nothing cleared the bar this week.</p>"
     you = "\n".join(_fluency_item_html(i) for i in selection.for_you) or "  <p>Nothing this week.</p>"
 
+    # Linked, like the main sections: the tail is a reading list, and an
+    # unlinked title makes the reader go and search for it by hand.
     skipped_items = "\n".join(
-        f'    <li>{_ESC(i.title)} <span style="color:#999">— {_ESC(i.source)}</span></li>'
+        f'    <li><a href="{_ESC(i.url)}">{_ESC(i.title)}</a>'
+        f' <span style="color:#999">— {_ESC(i.source)}</span></li>'
         for i in selection.considered_and_skipped
     )
     skipped = (
@@ -155,16 +202,20 @@ def render_email_html(selection: Selection, generated_at: datetime | None = None
   <h1>AI Digest</h1>
   <p class="sub">{_fmt_date(generated_at)}</p>
 
-  <h2>For the org</h2>
+  <h2>{_ESC(ORG_HEADER)}</h2>
+  <p class="blurb">{_ESC(ORG_BLURB)}</p>
 {org}
 
-  <h2>For you</h2>
+  <h2>{_ESC(FLUENCY_HEADER)}</h2>
+  <p class="blurb">{_ESC(FLUENCY_BLURB)}</p>
 {you}
 
-  <h2>Considered &amp; skipped</h2>
+  <h2>{_ESC(TAIL_HEADER)}</h2>
+  <p class="blurb">{_ESC(TAIL_BLURB)}</p>
 {skipped}
 {op_notes}
-  <p class="footer">{len(selection.for_org)} for the org · {len(selection.for_you)} for you · \
+  <p class="footer">{len(selection.for_org)} in {_ESC(ORG_HEADER.lower())} · \
+{len(selection.for_you)} in {_ESC(FLUENCY_HEADER.lower())} · \
 {len(selection.considered_and_skipped)} listed in the tail{filtered_note}.</p>
 </body>
 </html>"""
@@ -182,7 +233,6 @@ def _org_item_text(item) -> str:
         f"  {item.source} · org relevance {item.org_score}/100\n"
         f"  {item.url}\n"
         f"  {item.summary}{sowhat}\n"
-        f"  Why it ranked: {item.org_reason}\n"
     )
 
 
@@ -192,8 +242,13 @@ def _fluency_item_text(item) -> str:
         f"  {item.source} · fluency {item.fluency_score}/100\n"
         f"  {item.url}\n"
         f"  {item.summary}\n"
-        f"  Why it ranked: {item.fluency_reason}\n"
     )
+
+
+def _text_section_header(header: str, blurb: str) -> str:
+    """Uppercase rule, then the same one-liner the HTML shows -- indented so it
+    reads as subordinate to the header without any styling to lean on."""
+    return f"{header.upper()}\n{'-' * 40}\n  {blurb}\n"
 
 
 def render_email_text(selection: Selection, generated_at: datetime | None = None) -> str:
@@ -209,7 +264,8 @@ def render_email_text(selection: Selection, generated_at: datetime | None = None
     org = "\n".join(_org_item_text(i) for i in selection.for_org) or "Nothing cleared the bar this week.\n"
     you = "\n".join(_fluency_item_text(i) for i in selection.for_you) or "Nothing this week.\n"
     skipped = "\n".join(
-        f"- {i.title} — {i.source}" for i in selection.considered_and_skipped
+        f"- {i.title} — {i.source}\n  {i.url}"
+        for i in selection.considered_and_skipped
     ) or "None."
 
     filtered_note = ""
@@ -224,11 +280,12 @@ def render_email_text(selection: Selection, generated_at: datetime | None = None
 
     return (
         f"AI DIGEST\n{_fmt_date(generated_at)}\n\n"
-        f"FOR THE ORG\n{'-' * 40}\n\n{org}\n"
-        f"FOR YOU\n{'-' * 40}\n\n{you}\n"
-        f"CONSIDERED & SKIPPED\n{'-' * 40}\n\n{skipped}\n"
+        f"{_text_section_header(ORG_HEADER, ORG_BLURB)}\n{org}\n"
+        f"{_text_section_header(FLUENCY_HEADER, FLUENCY_BLURB)}\n{you}\n"
+        f"{_text_section_header(TAIL_HEADER, TAIL_BLURB)}\n{skipped}\n"
         f"{op_notes}\n"
-        f"\n{len(selection.for_org)} for the org · {len(selection.for_you)} for you · "
+        f"\n{len(selection.for_org)} in {ORG_HEADER.lower()} · "
+        f"{len(selection.for_you)} in {FLUENCY_HEADER.lower()} · "
         f"{len(selection.considered_and_skipped)} listed in the tail{filtered_note}.\n"
     )
 
@@ -249,8 +306,7 @@ def _md_org_item(item) -> str:
     return (
         f"### [{item.title}]({item.url}){flag}\n"
         f"*{item.source} · org relevance {item.org_score}/100*\n\n"
-        f"{item.summary}{sowhat}\n\n"
-        f"> Why it ranked: {item.org_reason}\n"
+        f"{item.summary}{sowhat}\n"
     )
 
 
@@ -258,8 +314,7 @@ def _md_fluency_item(item) -> str:
     return (
         f"### [{item.title}]({item.url})\n"
         f"*{item.source} · fluency {item.fluency_score}/100*\n\n"
-        f"{item.summary}\n\n"
-        f"> Why it ranked: {item.fluency_reason}\n"
+        f"{item.summary}\n"
     )
 
 
@@ -270,7 +325,8 @@ def render_vault_note(selection: Selection, generated_at: datetime | None = None
     org = "\n".join(_md_org_item(i) for i in selection.for_org) or "_Nothing cleared the bar this week._"
     you = "\n".join(_md_fluency_item(i) for i in selection.for_you) or "_Nothing this week._"
     skipped = "\n".join(
-        f"- {i.title} — {i.source}" for i in selection.considered_and_skipped
+        f"- [{i.title}]({i.url}) — {i.source}"
+        for i in selection.considered_and_skipped
     ) or "_None._"
 
     frontmatter = (
@@ -282,7 +338,7 @@ def render_vault_note(selection: Selection, generated_at: datetime | None = None
     return (
         f"{frontmatter}\n"
         f"# 🗞️ AI Digest — {date_str}\n\n"
-        f"## For the org\n\n{org}\n\n"
-        f"## For you\n\n{you}\n\n"
-        f"## Considered & skipped\n\n{skipped}\n"
+        f"## {ORG_HEADER}\n\n*{ORG_BLURB}*\n\n{org}\n\n"
+        f"## {FLUENCY_HEADER}\n\n*{FLUENCY_BLURB}*\n\n{you}\n\n"
+        f"## {TAIL_HEADER}\n\n*{TAIL_BLURB}*\n\n{skipped}\n"
     )

@@ -4,6 +4,12 @@ from datetime import datetime, timezone
 
 from pipeline.dedupe import Candidate
 from pipeline.render import (
+    FLUENCY_BLURB,
+    FLUENCY_HEADER,
+    ORG_BLURB,
+    ORG_HEADER,
+    TAIL_BLURB,
+    TAIL_HEADER,
     render_email_html,
     render_email_text,
     render_vault_note,
@@ -13,9 +19,10 @@ from pipeline.score_stage import ScoredItem
 from pipeline.select import Selection
 
 
-def _org(title="Org story", vendor=False, so_what="Matters for pricing."):
+def _org(title="Org story", vendor=False, so_what="Matters for pricing.",
+         url="https://example.com/o"):
     return ScoredItem(
-        candidate=Candidate(title=title, url="https://example.com/o", source="Stratechery"),
+        candidate=Candidate(title=title, url=url, source="Stratechery"),
         org_score=82, org_reason="Strong strategy signal.",
         fluency_score=10, fluency_reason="", summary="Sentence one. Sentence two.",
         so_what=so_what, vendor_marketing=vendor, clean_title=title, trust_tier="independent_analysis",
@@ -31,10 +38,14 @@ def _flu(title="Fluency story"):
     )
 
 
+SKIPPED_URL = "https://example.com/skipped-one"
+
+
 def _sel():
     return Selection(
         for_org=[_org()], for_you=[_flu()],
-        considered_and_skipped=[_org("Skipped one")], filtered_out_count=37,
+        considered_and_skipped=[_org("Skipped one", url=SKIPPED_URL)],
+        filtered_out_count=37,
     )
 
 
@@ -45,15 +56,40 @@ NOW = datetime(2026, 8, 16, tzinfo=timezone.utc)
 
 def test_email_includes_sections_and_items():
     html = render_email_html(_sel(), NOW)
-    assert "For the org" in html and "For you" in html and "Considered" in html
+    assert ORG_HEADER in html and FLUENCY_HEADER in html and TAIL_HEADER in html
     assert "Org story" in html and "Fluency story" in html
     assert "https://example.com/o" in html  # linked
 
 
-def test_email_shows_score_and_reason_not_just_verdict():
+def test_email_shows_the_score_so_the_ranking_stays_explainable():
     html = render_email_html(_sel(), NOW)
-    assert "82/100" in html and "Strong strategy signal." in html
-    assert "78/100" in html and "Real practitioner debate." in html
+    assert "82/100" in html
+    assert "78/100" in html
+
+
+def test_email_does_not_render_the_reason_strings():
+    """Dropped from the reader-facing output on purpose. The reasons are still
+    on ScoredItem and still printed by run.py's console digest -- that is where
+    a bad ranking gets diagnosed -- but a per-item "Why it ranked" line
+    restated the summary and pushed the content down the page."""
+    html = render_email_html(_sel(), NOW)
+    assert "Why it ranked" not in html
+    assert "Strong strategy signal." not in html
+    assert "Real practitioner debate." not in html
+
+
+def test_no_section_carries_a_reason_line_in_any_format():
+    """One assertion covering all three renderers, so re-adding the line to
+    just one of them (the drift this whole module guards against) fails."""
+    sel = _sel()
+    for out in (
+        render_email_html(sel, NOW),
+        render_email_text(sel, NOW),
+        render_vault_note(sel, NOW),
+    ):
+        assert "Why it ranked" not in out
+        assert "Strong strategy signal." not in out
+        assert "Real practitioner debate." not in out
 
 
 def test_email_shows_so_what_for_org_only():
@@ -78,7 +114,51 @@ def test_email_escapes_html_in_titles():
 def test_email_handles_empty_sections_gracefully():
     empty = Selection(for_org=[], for_you=[], considered_and_skipped=[])
     html = render_email_html(empty, NOW)
-    assert "For the org" in html  # renders without crashing
+    assert ORG_HEADER in html  # renders without crashing
+
+
+# --- section headers + descriptions ---
+# The one-liners describe what each section SELECTS FOR (derived from the
+# org_score / fluency_score rubrics), which is the part a header alone can't
+# carry. All three formats show them, from the same constants.
+
+def test_every_section_description_appears_in_all_three_formats():
+    sel = _sel()
+    for out in (
+        render_email_html(sel, NOW),
+        render_email_text(sel, NOW),
+        render_vault_note(sel, NOW),
+    ):
+        for blurb in (ORG_BLURB, FLUENCY_BLURB, TAIL_BLURB):
+            assert blurb in out
+
+
+def test_descriptions_are_one_sentence():
+    """The brief was 'one sentence maximum' -- a paragraph under every header
+    turns the digest into a manual."""
+    for blurb in (ORG_BLURB, FLUENCY_BLURB, TAIL_BLURB):
+        assert blurb.count(".") == 1 and blurb.endswith(".")
+
+
+def test_html_description_is_muted_and_smaller_than_body_text():
+    html = render_email_html(_sel(), NOW)
+    assert 'class="blurb"' in html
+    assert ".blurb { font-size: 12px; color: #777;" in html  # body copy is 14px
+
+
+def test_old_headers_are_gone_everywhere():
+    """They read as opaque ('For you' says nothing about the technical-depth
+    bar) or as a dismissal of items we are actually recommending."""
+    sel = _sel()
+    for out in (
+        render_email_html(sel, NOW),
+        render_email_text(sel, NOW),
+        render_vault_note(sel, NOW),
+    ):
+        lowered = out.lower()
+        assert "for the org" not in lowered
+        assert "considered & skipped" not in lowered
+        assert "considered and skipped" not in lowered
 
 
 # --- vault note ---
@@ -97,7 +177,16 @@ def test_vault_note_filename_convention():
 def test_vault_note_includes_items_as_markdown_links():
     note = render_vault_note(_sel(), NOW)
     assert "[Org story](https://example.com/o)" in note
-    assert "## For the org" in note and "## For you" in note
+    assert f"## {ORG_HEADER}" in note and f"## {FLUENCY_HEADER}" in note
+
+
+# --- the tail is a reading list, so it links like the rest ---
+
+def test_tail_items_are_linked_in_all_three_formats():
+    sel = _sel()
+    assert f'<a href="{SKIPPED_URL}">Skipped one</a>' in render_email_html(sel, NOW)
+    assert SKIPPED_URL in render_email_text(sel, NOW)
+    assert f"[Skipped one]({SKIPPED_URL})" in render_vault_note(sel, NOW)
 
 
 # --- plaintext email part ---
@@ -106,7 +195,7 @@ def test_email_text_contains_every_item_title_and_url():
     text = render_email_text(_sel(), NOW)
     assert "Org story" in text and "https://example.com/o" in text
     assert "Fluency story" in text and "https://example.com/f" in text
-    assert "FOR THE ORG" in text and "FOR YOU" in text
+    assert ORG_HEADER.upper() in text and FLUENCY_HEADER.upper() in text
 
 
 def test_email_text_has_no_yaml_frontmatter():

@@ -24,13 +24,18 @@ for future changes.
 ## Ranking: two protected objectives
 
 Every candidate gets two independent scores from one structured LLM call:
-`org_score` (delivery-economics relevance, for "For the org") and
-`fluency_score` (AI-practitioner fluency, for "For you") — each with its own
-one-line reason, never a bare verdict.
+`org_score` (delivery-economics relevance, for the **"Delivery economics"**
+section) and `fluency_score` (AI-practitioner fluency, for **"Practitioner
+depth"**) — each with its own one-line reason, never a bare verdict. (Those
+two sections were called "For the org" and "For you" until 2026-08-21;
+older notes below still use the old names. The reason strings are still
+produced and still drive the console digest — they are simply no longer
+*rendered* into the email or vault note; see the presentation-pass note in
+Stage 4a.)
 
 Selection order matters: top 5 by `org_score` are picked first and removed
 from the pool, *then* top 3 by `fluency_score` are picked from what's left.
-That removal order is what makes "For you" actually protected — if fluency
+That removal order is what makes the fluency section actually protected — if fluency
 were ranked against the full pool including org picks, a slow AI-fluency
 week could still get crowded out by overlapping stories.
 
@@ -620,15 +625,44 @@ printed at the end). `--verbose` mirrors full detail to the console.
 callback purely to drive those progress lines (no effect on results).
 
 **Stage 4a (render) — built.** `pipeline/render.py`: `render_email_html()`
-(the reader-facing email — For the org / For you / Considered & skipped,
-each item with score + one-line reason per the "explainable ranking" spec,
-vendor_marketing badge, so-what for org, links, HTML-escaped) and
-`render_vault_note()` (Obsidian markdown, `type: ai-digest` frontmatter,
-`🗞️ AI Digest YYYY-MM-DD.md` filename). Pure functions, fully tested
-(`tests/test_render.py`). Also `render_email_text()` (the `text/plain`
-alternative part — no YAML frontmatter, since that's right in a vault note
-and noise in an email body). Concepts frontmatter still TODO (ScoredItem has
-no concept tags yet).
+(the reader-facing email — Delivery economics / Practitioner depth / Also
+consider, each item with score, vendor_marketing badge, so-what for org,
+links, HTML-escaped) and `render_vault_note()` (Obsidian markdown,
+`type: ai-digest` frontmatter, `🗞️ AI Digest YYYY-MM-DD.md` filename). Pure
+functions, fully tested (`tests/test_render.py`). Also `render_email_text()`
+(the `text/plain` alternative part — no YAML frontmatter, since that's right
+in a vault note and noise in an email body). Concepts frontmatter still TODO
+(ScoredItem has no concept tags yet).
+
+**Presentation pass, 2026-08-21 (render-only — scoring and selection
+untouched).** Four changes, applied identically to all three formats:
+
+- **Section headers renamed**, and each now carries a one-sentence
+  description under it (muted, 12px against 14px body copy). The headers and
+  blurbs are module constants — `ORG_HEADER`/`ORG_BLURB`,
+  `FLUENCY_HEADER`/`FLUENCY_BLURB`, `TAIL_HEADER`/`TAIL_BLURB` — shared by
+  HTML, plaintext and markdown so the three can't drift. `For the org` →
+  **"Delivery economics"**, `For you` → **"Practitioner depth"**,
+  `Considered & skipped` → **"Also consider"**. The blurbs are written from
+  the *rubrics* (the `org_score` / `fluency_score` definitions above), not
+  from the header names — "For you" in particular never said anything about
+  the technical-depth-over-news-coverage bar it actually ranks on. If a
+  rubric changes, change the blurb with it.
+- **The tail items link**, in all three formats. It's a reading list; an
+  unlinked title makes the reader go and search for it.
+- **"Why it ranked" is no longer rendered anywhere.** This is a
+  presentation decision, NOT a removal of the explainable-ranking spec —
+  read it as such before "restoring" it. `org_reason` / `fluency_reason` are
+  still produced by the score prompt, still carried on `ScoredItem`, and
+  still printed by `run.py`'s console/debug digest, which is where a bad
+  ranking gets diagnosed. What's gone is the per-item line in the *email and
+  vault note*, where it largely restated the summary and pushed content down
+  the page. **The score number stays in the meta line**
+  ("org relevance 78/100"), so the ranking is still explainable to the
+  reader. Re-adding the line is one line per format in `render.py`;
+  `test_no_section_carries_a_reason_line_in_any_format` is what would need
+  deleting, and it exists to make the removal deliberate rather than
+  accidental.
 
 **Stage 4b–d (send) — BUILT 2026-08-20, not yet run against real SMTP.**
 Three new modules, all offline-tested:

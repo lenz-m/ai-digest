@@ -15,6 +15,7 @@ from pipeline import config as config_module
 from pipeline import deliver as deliver_module
 from pipeline.cost import CostTracker
 from pipeline.dedupe import Candidate, SeenStore, content_hash
+from pipeline.render import ORG_HEADER
 from pipeline.deliver import deliver, scoring_is_degraded
 from pipeline.score_stage import ScoredItem, ScoreFailure, ScoreOutcome
 from pipeline.select import Selection
@@ -255,7 +256,7 @@ def test_replace_failure_after_a_successful_send_still_commits(dirs, seen, monke
     assert dirs.seen_cache.exists()
     # "recoverable by hand from the log" has to actually be true
     assert "type: ai-digest" in caplog.text
-    assert "For the org" in caplog.text
+    assert ORG_HEADER in caplog.text
 
 
 def test_thin_week_sends_nothing_but_still_commits(dirs, seen):
