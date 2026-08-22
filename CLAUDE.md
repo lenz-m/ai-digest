@@ -163,9 +163,21 @@ deliberately wide 5s → 30s → 120s gaps.)
 **Transport settings, all env-overridable** (`AI_DIGEST_SMTP_*`):
 `smtp.mail.me.com`, port **587 with STARTTLS** — Apple's documented config.
 465/implicit-SSL reportedly works too; flip `AI_DIGEST_SMTP_USE_SSL=true` and
-the port if 587 misbehaves. **Neither has been tested against this account
-yet — record which one worked here after the first real send, because the Pi
-deploy depends on that fact.**
+the port if 587 misbehaves.
+
+**VERIFIED 2026-08-21 — 587/STARTTLS works.** First real send from the Mac
+was accepted on attempt 1, no retries, no 550 on `From`. Use these settings
+on the Pi; if the Pi's outbound IP causes trouble it will show up as a 4xx
+(the retry policy's job), not as a config problem.
+
+**Delivery gotcha, cost ~20 minutes to diagnose:** the message was accepted
+and delivered, but **did not appear in Mail.app** — only in the web client at
+icloud.com. Self-sends (From and To both the same iCloud address) are
+unreliable to surface in the desktop client. This matters for the Pi, where
+nobody watches a console and "no email arrived" is the only symptom you'd
+ever see. **Before concluding a send failed, check icloud.com in a browser
+and check Junk there, not just Mail.app.** Better still, set `AI_DIGEST_TO`
+to an address that is *not* the sending account.
 
 `AI_DIGEST_FROM` must be an address the iCloud account actually owns, or
 iCloud answers with a hard 550 (not retryable). It defaults to
@@ -312,14 +324,18 @@ without new evidence.
 
 ## Status
 
-**At a glance (Aug 2026):** Stages 1–4 built; **stage 4's send path has never
-run against real SMTP** — the manual smoke tests are the next thing to do. A
-full `--sync` run ingests 44 sources → ~450 candidates → filter → score →
-select → renders → delivers, ~$1/run at full sync price (~half that on
-batch). 200 tests, all offline. Curation machinery is doing its job: org
-section is all independent-analysis/news (no vendor junk), fluency section
-is real practitioner content, ranking is explainable (score + reason per
-item).
+**At a glance (Aug 21, 2026):** **Stages 1–4 COMPLETE and verified end to
+end.** A real digest was sent to a real inbox on 2026-08-21: SMTP accepted on
+attempt 1, email delivered, `outbox/Digests/🗞️ AI Digest 2026-08-21.md`
+written with the correct final name and no `.partial` left behind. 243 tests,
+all offline. **Measured cost of a full `--sync` run: $0.64** (60 Sonnet score
+calls $0.539 + 13 Haiku filter calls $0.104) — under the $0.80–1.00 estimate,
+and batch would roughly halve it. The ~$40–55/year projection holds.
+
+Score-stage failures ran at **1 of 60 (1.7%)** on the last two runs, down
+from 48% before the Aug 20 fixes.
+
+Only stage 5 (Pi deploy + Mac launchd/rsync glue) remains.
 
 Remaining known gaps:
 
@@ -332,16 +348,47 @@ Remaining known gaps:
   **DIAGNOSED AND FIXED 2026-08-20.** The Aug 20 log settled it, and the
   headline number was measuring two unrelated things at once. See "Score-stage
   failures: what they actually were" below.
-- **The org section skews AI-industry macro** rather than delivery-economics.
-  The "content is genuinely scarce" explanation was at best partial — the
-  `max_survivors` cap cut in source order and the Economist/WSJ feeds sit at
-  the end of the source list, so they had never once been scored. **Fixed
-  2026-08-20** by round-robin interleaving before the cap; the UAT judgment
-  needs re-running now that those feeds can actually reach the scorer.
+- ~~**The org section skews AI-industry macro** rather than
+  delivery-economics; "that content is genuinely scarce week to week."~~
+  **RESOLVED 2026-08-21 — the scarcity explanation was FALSE.** It was three
+  stacked bugs, not a content shortage: (1) `max_survivors` cut in source
+  order and the Economist/WSJ feeds sit at rows 46–51, so they were never
+  scored; (2) thinking blocks ate the score-stage token budget, truncating
+  responses mid-JSON; (3) the Aug 20 run exhausted the API credit balance
+  partway through scoring. With all three fixed, the Aug 21 UAT run put
+  **three genuine delivery-economics items in the five org slots**: a WSJ
+  piece on PE firms embedding AI specialists into portfolio companies (with a
+  so-what about shrinking advisory revenue), AT&T shifting 40% of workloads to
+  open models for 56% cost savings, and Benedict Evans on why job-exposure
+  forecasts are a poor basis for pyramid restructuring. **Do not re-derive
+  the scarcity conclusion — the rubric was never the problem.**
 - **The filter passes ~71%** (312 of 441) against a design intent of ~50
-  survivors — open question, see the Seen-set commit rule section.
-- **HBR feed blocked at TLS**, and stage 5 (Pi deploy + Mac glue) not
-  started.
+  survivors — open question, see the Seen-set commit rule section. This is
+  *why* the `max_survivors` cap binds every week and does the real curating.
+- **One score failure per run, and it's a JSON-escaping bug.** The Aug 21
+  drop ("📈 Data to start your week") was a complete, well-formed judgment
+  that failed `json.loads` because the model wrote literal double quotes
+  inside a string value: `shifting budget toward cheaper, "good enough"
+  models`. Not truncation (`stop_reason=end_turn`, `blocks=('text',)`). Fix
+  is either a prompt instruction to avoid double quotes inside string values,
+  or — better — move the score call to structured output / tool use so the
+  API enforces valid JSON instead of the model hand-writing it.
+- **Fetch-layer losses are now the biggest content leak, not scoring.** The
+  Aug 21 log shows: Economist **403** on every article fetch, WSJ **401** on
+  every article fetch (both feeds work; it is the full-text fetch that is
+  paywalled), HBR still `SSL: UNEXPECTED_EOF_WHILE_READING`, A16Z feed
+  **404**, Intelligence Squared **410 Gone**, Azure feed timeout. The
+  business-press sources are therefore being scored on feed excerpt alone
+  while other sources get 4,000 words of article text — a systematic
+  disadvantage. A16Z and Intelligence Squared are simply dead URLs in
+  `manual_sources.tsv` and should be fixed or dropped.
+- **Stage 5 (Pi deploy + Mac glue) not started.**
+
+**The decision that gates stage 5:** `commit_seen` is still off. Deploying to
+the Pi with it off means the *same digest every Monday*. Turning it on makes
+the current drops permanent — mainly the `max_survivors` cap, which discards
+~250 filter-passed items a week. Resolve the cap/filter question before the
+Pi deploy, not after.
 
 ## Score-stage failures: what they actually were (settled 2026-08-20)
 
@@ -835,6 +882,10 @@ alternatives, the test strategy — is in `docs/stage4-send-plan.md`.
     A16Z (`a16z.com/feed/`), Intelligence Squared (Acast podcast feed
     `rss.acast.com/intelligencesquared`). GCP/AWS/A16Z stay `vendor`-tiered;
     Intelligence Squared `independent_news`.
+    **Two of these are now DEAD (Aug 21 run):** `a16z.com/feed/` returns
+    **404** and `rss.acast.com/intelligencesquared` returns **410 Gone**.
+    Both need a working URL or removal from `manual_sources.tsv` — right now
+    they cost a failed fetch every run and contribute nothing.
   - **Strategy cache now URL-aware (bug fix).** `cache/fetch_strategy.json`
     is keyed by source *name*; when a source's URL changes (scrape→feed), the
     old "listing" verdict would otherwise stick and the pipeline would try to
