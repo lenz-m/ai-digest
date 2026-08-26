@@ -1,0 +1,29 @@
+[Unit]
+Description=Trigger the weekly AI digest on Monday morning
+Documentation=https://github.com/lenz-m/ai-digest
+
+[Timer]
+Unit=ai-digest.service
+
+# Monday 06:00 PI-LOCAL TIME. OnCalendar resolves against the system
+# timezone, so this is only 6am your time if the Pi's timezone is set --
+# a stock Raspberry Pi OS image is UTC, which would fire at 02:00 ET.
+# The runbook has the timedatectl step. Verify with:
+#   systemctl list-timers ai-digest.timer
+#
+# Monday rather than Sunday evening: picks up weekend publications and
+# lands at the start of the work week instead of during weekend wind-down.
+OnCalendar=Mon *-*-* 06:00:00
+
+# If the Pi was off, rebooting, or mid-upgrade at 06:00, run as soon as it
+# is back instead of silently skipping the week. "No email arrived" is the
+# only symptom this system has, so never skipping is worth more than
+# landing exactly on the hour.
+Persistent=true
+
+# Small spread so we are not hitting 44 feeds at exactly :00:00 alongside
+# every other RSS reader on the internet. Well inside the 6am intent.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

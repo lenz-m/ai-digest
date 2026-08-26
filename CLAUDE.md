@@ -135,7 +135,48 @@ Split by machine, matching what each actually has available:
   (no TPM). Least-bad option, chosen deliberately over something like sops
   that would add complexity without adding real protection on this
   hardware: `.env` file, `chmod 600`, owned by the pi user, loaded via
-  `python-dotenv` / systemd `EnvironmentFile`.
+  `python-dotenv` (NOT systemd `EnvironmentFile` — see Stage 5a for why
+  pointing both parsers at one secret file is a trap).
+
+**`chmod 600` is NOT the whole story on this Pi — it is barely a control at
+all.** The Pi runs two nightly backup jobs, set up separately from ai-digest:
+`pi-snapshot.sh` (02:00) rsyncs `/home`, `/etc`, `/srv`, `/opt` to an
+unencrypted ext4 USB flash drive, keeping 30 rolling daily snapshots via
+hardlinks; `rpi-clone -l mmcblk0` (02:30) writes a full bootable clone to the
+SD card's second partition. `~/ai-digest/.env` sits under `/home`, so **both
+jobs copy it**. Mode 600 stops other unprivileged users — of which there are
+none on this box — and is simply not a factor for a root-run rsync.
+
+**This is a different risk class from what the Pi held before, not more of the
+same.** The only credential on it previously was a repo-scoped GitHub deploy
+key, worthless to anyone without the machine it is bound to.
+`ANTHROPIC_API_KEY` and `SMTP_APP_PASSWORD` are *bearer strings* — they
+authenticate from any IP, for anyone holding them. The same backup media that
+was low-consequence for a deploy key is not low-consequence for these.
+
+**The real controls are therefore not file permissions:**
+
+- a **monthly spend limit** on the Anthropic key, set in the console — the
+  only measure that binds someone using the key off this machine. The
+  in-repo `AI_DIGEST_COST_CEILING_USD` does not: it is config on the same
+  disk as the key and guards against a runaway loop in our own code, nothing
+  more.
+- the iCloud **app-specific password**, revocable at appleid.apple.com
+  **independently of the Apple ID password** — revoking it changes no
+  password and signs no device out. That independence is what makes it the
+  safe credential to hand a Pi.
+- keeping `.env` out of git — `git log --all --oneline -- .env` must be
+  empty; a hit means the value reached GitHub and must be rotated before
+  anything else. This is a pre-flight step in the runbook.
+- accepting that **rotation, not deletion, is the remedy.** The 30-snapshot
+  rotation means a value removed from `.env` today still sits on the flash
+  drive for up to 30 days. Revoking at the vendor takes effect instantly;
+  scrubbing backup media does not.
+
+Full detail — the backup-exposure note, the pre-flight commands, and a
+credential-recovery table listing the five variable names, where each is
+obtained and how each rotates (names and sources only, never values) — is in
+`docs/stage5-pi-deploy.md` §§ 3 and 6 and its "Credential recovery" section.
 
 `pipeline/config.py` calls `load_dotenv()` unconditionally, but that's a
 no-op if `.env` doesn't exist or doesn't set a given key -- python-dotenv
@@ -335,7 +376,8 @@ and batch would roughly halve it. The ~$40–55/year projection holds.
 Score-stage failures ran at **1 of 60 (1.7%)** on the last two runs, down
 from 48% before the Aug 20 fixes.
 
-Only stage 5 (Pi deploy + Mac launchd/rsync glue) remains.
+**Stage 5a (Pi deploy) BUILT 2026-08-26** — see `docs/stage5-pi-deploy.md`
+and `deploy/`. Stage 5b (Mac launchd/rsync glue) remains.
 
 Remaining known gaps:
 
@@ -382,13 +424,23 @@ Remaining known gaps:
   while other sources get 4,000 words of article text — a systematic
   disadvantage. A16Z and Intelligence Squared are simply dead URLs in
   `manual_sources.tsv` and should be fixed or dropped.
-- **Stage 5 (Pi deploy + Mac glue) not started.**
+- ~~**Stage 5 (Pi deploy + Mac glue) not started.**~~ **Stage 5a built
+  2026-08-26** (systemd unit + timer + bootstrap + runbook). Stage 5b (Mac
+  glue) still not started, so `data/sources.tsv` on the Pi is a static
+  snapshot and `outbox/Digests/` accumulates unarchived notes.
 
-**The decision that gates stage 5:** `commit_seen` is still off. Deploying to
-the Pi with it off means the *same digest every Monday*. Turning it on makes
-the current drops permanent — mainly the `max_survivors` cap, which discards
-~250 filter-passed items a week. Resolve the cap/filter question before the
-Pi deploy, not after.
+**The decision that gated stage 5 — RESOLVED 2026-08-26.** `commit_seen` was
+held off pending two things, and both are now met: score-stage failures are at
+1 of 60 (1.7%), and the `max_survivors` round-robin fix (commit `cf0118c`) is
+verified — `logs/run-20260821-162436.log` shows WSJ and Economist articles
+reaching the full-text fetch, which only happens to items that survived the
+cap. Those sources sit at rows 46–51 and had never been scored before. The
+runbook therefore turns `AI_DIGEST_COMMIT_SEEN=true` on at deploy. Escape
+hatch if it misbehaves: `rm cache/seen.json` restores a blank slate.
+
+**Still true, and now sharper:** the filter passes ~71%, so `max_survivors` is
+the real curator, and with `commit_seen` on its casualties are permanently
+dropped rather than deferred a week. That is the next thing to fix.
 
 ## Score-stage failures: what they actually were (settled 2026-08-20)
 
@@ -823,11 +875,66 @@ because the Pi has no route to iCloud Drive — which is the whole reason the
 architecture is split this way. Don't relitigate.
 
 **Not started:** the manual smoke tests (they need Keychain entries and send
-real email — see `docs/stage4-send-plan.md` §5), and stage 5 (Pi deploy docs
-+ Mac launchd/rsync glue).
+real email — see `docs/stage4-send-plan.md` §5), and stage 5b (Mac
+launchd/rsync glue). Stage 5a (Pi deploy) was built 2026-08-26 —
+`docs/stage5-pi-deploy.md`.
 
 The design rationale behind all of the above — the questions, the rejected
 alternatives, the test strategy — is in `docs/stage4-send-plan.md`.
+
+## Stage 5a — Pi deploy (built 2026-08-26)
+
+**Why this got built when it did:** the user expected a digest email on Monday
+2026-08-24 and none arrived. The diagnosis was that **nothing had ever been
+deployed** — the Pi was empty, no unit, no clone, no `.env`. Stages 1–4 were
+complete and the 2026-08-21 send was a manual `--apply` from the Mac. There was
+no bug; the launch mechanism simply did not exist. `git log` confirms no stage 5
+commit before this one. **Do not go looking for a scheduling bug in the Aug 24
+window — there was no scheduler.**
+
+Artifacts: `deploy/ai-digest.service.template`, `deploy/ai-digest.timer`,
+`deploy/bootstrap-pi.sh`, `docs/stage5-pi-deploy.md`. Both units pass
+`systemd-analyze verify`; `OnCalendar=Mon *-*-* 06:00:00` normalizes correctly.
+
+Decisions worth not relitigating:
+
+- **`.env` is read by python-dotenv, NOT systemd `EnvironmentFile`.** Both
+  could work, and CLAUDE.md's Secrets section names either. Using both means
+  two parsers with different quoting rules on one secret file: systemd would
+  hand Python an app-specific password with the quote characters still
+  attached, surfacing as a 535 that looks like a wrong password. `config.py`
+  already calls `load_dotenv()` unconditionally, so the unit just sets
+  `WorkingDirectory` and lets it find the file. One parser.
+- **`TimeoutStartSec=10800` is load-bearing, not decoration.** The default
+  batch path polls up to `AI_DIGEST_BATCH_MAX_WAIT` (7200s), and systemd's
+  default `TimeoutStartSec` for `Type=oneshot` is **90 seconds** — it would
+  SIGTERM the run mid-poll every week, with no email and a misleading
+  "timeout" in the journal.
+- **`ExecStart` uses an absolute path to `uv`.** systemd's PATH excludes
+  `~/.local/bin`, so a bare `uv` fails with `status=203/EXEC` — while working
+  perfectly when tested by hand in a login shell. `bootstrap-pi.sh` resolves
+  the real path and renders it into the unit, which is why the unit is a
+  `.template`.
+- **`LANG`/`LC_ALL=C.UTF-8` set explicitly.** The vault note filename starts
+  with an emoji. PEP 538 would coerce C → C.UTF-8 anyway; relying on an
+  implicit coercion for filename encoding is not worth the saving.
+- **No automatic retry.** Exit 3 is fatal (billing/auth) and exit 1 means
+  `send.py` already exhausted its 5s/30s/120s ladder. Repeated bad-credential
+  attempts against Apple risk throttling the account.
+- **`Persistent=true` on the timer.** A missed Monday is invisible — no email
+  is the only symptom this system has — so catching up after downtime beats
+  landing exactly on the hour.
+- **The bootstrap refuses to arm the timer** while `.env` holds placeholders or
+  `data/sources.tsv` is missing, rather than arming a unit that will fail at
+  06:00 with nobody watching.
+
+**The clone-and-run trap, worth knowing before debugging a fresh Pi:**
+`.gitignore` carries `data/*` with only `manual_sources.tsv` re-included, so a
+fresh clone has **no `data/sources.tsv`** — and the fallback
+`cache/sources_last_good.tsv` is gitignored too. `ingest.py` raises
+`IngestError` at stage 1 before any API call. The file must be scp'd from the
+Mac, and until stage 5b exists it is a static snapshot that does not track
+Reminders.
 
 ## Open items for next session
 
