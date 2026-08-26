@@ -376,8 +376,11 @@ and batch would roughly halve it. The ~$40–55/year projection holds.
 Score-stage failures ran at **1 of 60 (1.7%)** on the last two runs, down
 from 48% before the Aug 20 fixes.
 
-**Stage 5a (Pi deploy) BUILT 2026-08-26** — see `docs/stage5-pi-deploy.md`
-and `deploy/`. Stage 5b (Mac launchd/rsync glue) remains.
+**Stage 5a (Pi deploy) DEPLOYED AND VERIFIED END TO END 2026-08-26** — the
+Pi sent a real digest that was received, the timer is armed for Mon
+2026-08-31 06:01 CDT, and `commit_seen` is ON and committing. See
+`docs/stage5-pi-deploy.md` and `deploy/`. Stage 5b (Mac launchd/rsync glue)
+remains.
 
 Remaining known gaps:
 
@@ -895,6 +898,39 @@ window — there was no scheduler.**
 Artifacts: `deploy/ai-digest.service.template`, `deploy/ai-digest.timer`,
 `deploy/bootstrap-pi.sh`, `docs/stage5-pi-deploy.md`. Both units pass
 `systemd-analyze verify`; `OnCalendar=Mon *-*-* 06:00:00` normalizes correctly.
+
+**DEPLOYED AND VERIFIED 2026-08-26. The system is live.** Confirmed on the Pi:
+
+- `~/ai-digest` clone, `uv sync` clean, `.env` mode 600.
+- A full run under **systemd** (`systemctl start ai-digest.service`) sent an
+  email that was **received** — the first delivery originating from the Pi.
+- `seen-set committed: 341 item(s) marked, store now holds 334`. The seen-set
+  now persists; **`AI_DIGEST_COMMIT_SEEN=true` is live.** (341 vs 334 is not a
+  defect: marks include canonical-URL collisions across sources, and
+  `mark_seen` never overwrites an existing entry.)
+- `systemctl list-timers` → `Mon 2026-08-31 06:01:47 CDT`, activating
+  `ai-digest.service`. The `:01:47` is `RandomizedDelaySec=300` doing its job.
+- **Pi timezone is `America/Chicago`, and that is DELIBERATE** (user
+  confirmed). Do not "fix" it to America/New_York.
+
+**Deploy gotcha that cost real time, worth knowing:** the first Anthropic key
+pasted into `.env` was well-formed (115 chars, `sk-ant-` prefix, no
+whitespace) but returned `401 API key is invalid`. Exit 3, no send, nothing
+committed — the fatal-error path behaving exactly as designed. The fix was
+regenerating the key and copying it from the **creation dialog**, since the
+console only displays a key in full once. If a future key 401s, suspect a
+value copied from the masked key list before suspecting anything in this repo.
+
+**Security posture, decided 2026-08-26** (full detail in the Secrets section
+and `docs/stage5-pi-deploy.md` § 3): `.env` IS copied into the nightly
+flash-drive snapshots and the SD clone; this is accepted, not solved. The
+compensating controls are all in place — a monthly spend limit on the
+Anthropic key, a key used **only** on the Pi, and a **Pi-specific iCloud
+app-specific password** (the Mac keeps its own in Keychain), so either can be
+revoked without touching the other machine. Verified clean: no `.env` blob in
+git history on any branch, no secret material in `logs/`, and
+`journalctl -u ai-digest | grep -c 'sk-ant'` = 0. `ANTHROPIC_API_KEY` is not a
+`CONFIG` field, so it cannot surface in a traceback repr.
 
 Decisions worth not relitigating:
 
