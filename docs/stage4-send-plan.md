@@ -224,12 +224,14 @@ the right home for the `max_survivors` cap count once §0.7 is settled
 argument, and per §0.7 it is currently the larger silent loss of the two.
 Not folded into this line — different failure, different number.
 
-### 0.7 The `max_survivors` cap cuts by source position, and it binds every run — OPEN, needs a decision
+### 0.7 The `max_survivors` cap cuts by source position, and it binds every run — RESOLVED, shipped in `cf0118c`
 
-Added 2026-08-20. This is a **proposal, not a decision** — it changes ranking
-behaviour, which is the user's call, and nothing here is built.
+Added 2026-08-20 as a proposal; **the round-robin option below shipped in
+commit `cf0118c`**, and `run.py:361` now reads
+`survivors = interleave_by_source(passed)[: CONFIG.max_survivors]`. The
+analysis that follows describes the pre-fix behaviour it was written against.
 
-**What was checked.** `run.py:179` is `survivors = passed[:CONFIG.max_survivors]`
+**What was checked.** `run.py` then read `survivors = passed[:CONFIG.max_survivors]`
 (default 60). `passed` comes from `parse_filter_results`, which writes
 verdicts into a list indexed by candidate position and returns it in that
 order; `dedupe()` also preserves input order; `fetch_all` appends per source

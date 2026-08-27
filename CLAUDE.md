@@ -44,7 +44,7 @@ week could still get crowded out by overlapping stories.
 Source-level trust tier (`independent_analysis` / `independent_news` /
 `vendor`), classified once per source and cached in
 `cache/trust_tiers.json`, human-correctable (edited entries win over the
-seed). Built in `pipeline/trust.py`, seeded for all 37 known sources. The
+seed). Built in `pipeline/trust.py`, seeded for 42 of 44 known sources. The
 tier is injected into each score prompt so vendor-published content must
 clear a HIGHER bar for `org_score` (and its adoption claims are treated
 skeptically) — it does NOT penalize `fluency_score`, since a vendor
@@ -272,16 +272,25 @@ Filter-rejected items, by contrast, were genuinely judged.
 **`max_survivors`-capped items are a DIFFERENT case — do not lump them in
 here.** An earlier version of this rule did, on the premise that the cap
 cuts "for reasons unrelated to merit" and so those items deserve another
-shot next week. Verified 2026-08-20; the premise is wrong in a way that
-inverts the conclusion. `run.py:179` is `passed[:CONFIG.max_survivors]`, and
-`passed` is in **candidate order = source order** (`sources.tsv` row order,
-with manual-only sources appended last), because `FilterVerdict` carries
-only a pass/fail bool — there is no score to rank by. So the cap does not
-cut arbitrarily, it cuts **positionally and deterministically**: the same
-tail of the source list loses every single week. A source past the cutoff
-never gets "another shot," so leaving its items unmarked doesn't preserve a
-chance — it guarantees the unbounded weekly resubmission this whole rule
+shot next week. Verified 2026-08-20; the premise was wrong in a way that
+inverted the conclusion. `run.py` then sliced `passed[:CONFIG.max_survivors]`,
+and `passed` was in **candidate order = source order** (`sources.tsv` row
+order, with manual-only sources appended last), because `FilterVerdict`
+carries only a pass/fail bool — there is no score to rank by. So the cap did
+not cut arbitrarily, it cut **positionally and deterministically**: the same
+tail of the source list lost every single week. A source past the cutoff
+never got "another shot," so leaving its items unmarked didn't preserve a
+chance — it guaranteed the unbounded weekly resubmission this whole rule
 exists to prevent (see the undated-item argument above).
+
+**The round-robin fix restored the premise, and with it the original
+conclusion.** `run.py:361` is now
+`interleave_by_source(passed)[: CONFIG.max_survivors]` (commit `cf0118c`):
+every source gets representation, and the cut re-rolls week to week as feed
+contents change, so it really is merit-neutral. Cap-cut items therefore DO
+get another shot, and `run.py`'s `mark_seen_candidates` excludes them — see
+the comment at `run.py:429` and the docstring on
+`filter_stage.interleave_by_source`.
 
 **The cap binds on every full run** (measured from `logs/`, counting API
 calls per stage): 2026-08-16 → 12 filter requests (441–480 candidates) → **60
@@ -373,8 +382,9 @@ all offline. **Measured cost of a full `--sync` run: $0.64** (60 Sonnet score
 calls $0.539 + 13 Haiku filter calls $0.104) — under the $0.80–1.00 estimate,
 and batch would roughly halve it. The ~$40–55/year projection holds.
 
-Score-stage failures ran at **1 of 60 (1.7%)** on the last two runs, down
-from 48% before the Aug 20 fixes.
+Score-stage failures ran at **1 of 60 (1.7%)** on the two runs before the
+send and **0 of 60** on the applied run that sent it, down from 48% before
+the Aug 20 fixes.
 
 **Stage 5a (Pi deploy) DEPLOYED AND VERIFIED END TO END 2026-08-26** — the
 Pi sent a real digest that was received, the timer is armed for Mon
@@ -384,8 +394,9 @@ remains.
 
 Remaining known gaps:
 
-- **The seen-set is not persisted** (`commit_seen` ships off, deliberately —
-  see Stage 4b–d below). Every run therefore re-ingests everything.
+- **`commit_seen` ships off by default, deliberately** — see Stage 4b–d
+  below. A run from the Mac therefore re-ingests everything. The Pi's `.env`
+  sets it true, so the deployed Monday run does persist; see Stage 5a.
 - **Presentation is now free to iterate on** — `--render-only` replays the
   last run's scored items offline, so a header/layout change no longer costs
   a ~$0.64 re-run to see against real content. See the Replay section below.
@@ -524,7 +535,7 @@ the verification, and it is also the re-run of the rubric UAT.
 
 Stage detail below.
 
-**Stage 1 (ingest + dedupe) — built, logic verified, not yet pytest-clean.**
+**Stage 1 (ingest + dedupe) — built, logic verified.**
 
 - `pipeline/config.py` — all paths env-var overridable, so the same code
   runs unmodified on dev Mac and Pi.
@@ -542,18 +553,14 @@ Stage detail below.
   `seen.save()` itself — the caller persists only once a run is committed
   (e.g. after the email actually sends), so a crash mid-run doesn't burn an
   item's one shot at being shown.
-- `tests/test_ingest.py`, `tests/test_dedupe.py` — full pytest coverage
-  written, **not yet run**: this sandbox has no network access, so
-  `uv sync` can't fetch even `pytest`. I ran the equivalent assertions by
-  hand with stdlib-only imports and they pass. Run `uv sync && uv run
-  pytest` for real green checkmarks before trusting this stage further.
+- `tests/test_ingest.py`, `tests/test_dedupe.py` — full pytest coverage.
 
 `data/sources.tsv` now has the real 44-row export. 37 sources parse (title +
 URL); 7 (Founders, David Senra, a duplicate TBPN row, Modern Wisdom, Price of
 Glory, Harvard Business Review, National Geographic History) still have empty
 notes and are silently skipped until their links get moved into Notes too.
 
-**Stage 2 (fetch) — built, pure logic verified, I/O layer unverified.**
+**Stage 2 (fetch) — built, pure logic verified.**
 
 Split into two files on purpose:
 
@@ -575,10 +582,6 @@ Split into two files on purpose:
 - `pipeline/fetch.py` — the actual HTTP requests and feed parsing
   (`httpx` + `feedparser`). Deliberately thin: mostly "call the library
   correctly" rather than logic, on top of the tested decision layer above.
-  **Not run even once** — `httpx`/`feedparser` aren't installed in this
-  sandbox either (same no-network wall as `uv sync`). This needs a real
-  `uv sync && uv run python -m pipeline.fetch` smoke test against actual
-  sources on your Mac before it's trusted.
 - Four sources need explicit handling beyond plain RSS: `Sebastian Mallaby`
   (x.com — marked `unsupported`, no free/reliable RSS exists for X profiles,
   not worth building something fragile for one source), two YouTube channels
@@ -643,9 +646,9 @@ fetches, not scraping bugs:
 - **iShares** — a fund-family product/locale-picker page, no article
   content exists on it regardless of link-text filtering.
 
-**Stage 3 (filter + score/summarize) — built, pure logic verified, LLM I/O
-layer unverified.** Split into more files than stages 1-2, deliberately,
-so the cost-critical logic is independently testable:
+**Stage 3 (filter + score/summarize) — built, pure logic verified.**
+Split into more files than stages 1-2, deliberately, so the cost-critical
+logic is independently testable:
 
 - `pipeline/llm_types.py` — `LLMRequest`/`LLMResult`, stdlib-only shared
   types. Exists purely so filter_stage.py/score_stage.py don't need to
@@ -707,11 +710,9 @@ went to the org slots). Fixes:
     the log instead of a bare "could not parse".
 - `pipeline/run.py` — wires ingest → dedupe → fetch → filter → score →
   select → render into one end-to-end run: prints the debug digest to
-  stdout AND writes reader-facing previews to `outbox/` (see Stage 4a).
-  Deliberately does **not** call `seen.save()` — the SEND half of stage 4
-  doesn't exist yet, so nothing is actually delivered anywhere; committing
-  the seen-set now would make items vanish from future runs without ever
-  reaching an email.
+  stdout AND writes reader-facing previews to `preview/` (see Stage 4a).
+  Persisting the seen-set is `deliver.py`'s job, not `run.py`'s — see
+  Stage 4b–d.
 - `pipeline/dedupe.py`'s `Candidate` gained `published`/`excerpt` fields
   (previously dropped after stage 1/2) since the filter stage needs the
   excerpt and stage 3 in general needs more than title/url/source.
@@ -769,7 +770,7 @@ untouched).** Four changes, applied identically to all three formats:
   deleting, and it exists to make the removal deliberate rather than
   accidental.
 
-**Stage 4b–d (send) — BUILT 2026-08-20, not yet run against real SMTP.**
+**Stage 4b–d (send) — BUILT 2026-08-20.**
 Three new modules, all offline-tested:
 
 - `pipeline/email_build.py` — pure MIME. `multipart/alternative`, plaintext
@@ -1061,9 +1062,9 @@ Reminders.
     `WSJcomUSBusiness`, WSJ (Technology) = `RSSWSJD`, WSJ (Economy) =
     `socialeconomyfeed`. No CIO-Journal-specific feed exists (it's a
     newsletter), but Business + Technology cover the same enterprise-AI
-    ground. NOTE: user's WSJ full-article access is limited (sub coded to
-    a shared account) — but that only affects the user *reading* the linked
-    article, not the pipeline *ranking* from the feed's headline+summary.
+    ground. NOTE: user's WSJ full-article access is limited — but that only
+    affects the user *reading* the linked article, not the pipeline
+    *ranking* from the feed's headline+summary.
   - **EMAIL/IMAP ROUTE NO LONGER NEEDED.** Economist + WSJ work via public
     RSS, and HBR has a public feed too (just currently blocked at the TLS
     layer, see above) — so the whole dedicated-Gmail / newsletter-forwarding
