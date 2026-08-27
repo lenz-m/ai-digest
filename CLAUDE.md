@@ -285,7 +285,7 @@ exists to prevent (see the undated-item argument above).
 
 **The round-robin fix restored the premise, and with it the original
 conclusion.** `run.py:361` is now
-`interleave_by_source(passed)[: CONFIG.max_survivors]` (commit `cf0118c`):
+`interleave_by_source(passed)[: CONFIG.max_survivors]` (commit `a126671`):
 every source gets representation, and the cut re-rolls week to week as feed
 contents change, so it really is merit-neutral. Cap-cut items therefore DO
 get another shot, and `run.py`'s `mark_seen_candidates` excludes them — see
@@ -445,7 +445,7 @@ Remaining known gaps:
 
 **The decision that gated stage 5 — RESOLVED 2026-08-26.** `commit_seen` was
 held off pending two things, and both are now met: score-stage failures are at
-1 of 60 (1.7%), and the `max_survivors` round-robin fix (commit `cf0118c`) is
+1 of 60 (1.7%), and the `max_survivors` round-robin fix (commit `a126671`) is
 verified — `logs/run-20260821-162436.log` shows WSJ and Economist articles
 reaching the full-text fetch, which only happens to items that survived the
 cap. Those sources sit at rows 46–51 and had never been scored before. The

@@ -224,10 +224,10 @@ the right home for the `max_survivors` cap count once §0.7 is settled
 argument, and per §0.7 it is currently the larger silent loss of the two.
 Not folded into this line — different failure, different number.
 
-### 0.7 The `max_survivors` cap cuts by source position, and it binds every run — RESOLVED, shipped in `cf0118c`
+### 0.7 The `max_survivors` cap cuts by source position, and it binds every run — RESOLVED, shipped in `a126671`
 
 Added 2026-08-20 as a proposal; **the round-robin option below shipped in
-commit `cf0118c`**, and `run.py:361` now reads
+commit `a126671`**, and `run.py:361` now reads
 `survivors = interleave_by_source(passed)[: CONFIG.max_survivors]`. The
 analysis that follows describes the pre-fix behaviour it was written against.
 

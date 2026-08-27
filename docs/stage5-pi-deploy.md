@@ -161,7 +161,7 @@ Off, the pipeline never records which articles it has already shown you, so
 
 The gate that kept it off has been cleared: it was waiting on score-stage
 failures dropping near zero (now 1 of 60, 1.7%) and on the `max_survivors`
-round-robin fix being verified against a real run (commit `cf0118c`; the
+round-robin fix being verified against a real run (commit `a126671`; the
 Aug 21 log shows WSJ and Economist items reaching the score stage for the
 first time). Uncomment it:
 
