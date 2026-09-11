@@ -61,6 +61,43 @@ uv run pytest      # 243 offline tests, no API calls, no cost
 
 A green pytest run here proves the install before you spend a cent.
 
+### The Pi is a READ-ONLY consumer of this repo
+
+**Nothing is ever authored or committed on the Pi.** Code changes are made on
+the Mac, pushed, and pulled down here — `git pull` on the Pi should always be
+a fast-forward, and the working tree should always be clean.
+
+This is not tidiness for its own sake. The Pi is headless and unwatched, so a
+local commit there is invisible: it does not show up in any editor anyone
+opens, it is not in the Mac's history, and the first symptom is `fatal: Need
+to specify how to reconcile divergent branches` on a deploy — at which point
+you are debugging git instead of the thing you came to fix, possibly at 6am
+on a Monday with no digest.
+
+**When `git pull` reports divergent branches, the fix is to discard the Pi's
+side:**
+
+```bash
+git log --oneline origin/main..HEAD   # ALWAYS look first
+git reset --hard origin/main          # only if the above is empty
+```
+
+Check before you reset, every time, because the reset is what makes this rule
+safe rather than reckless — and the one case where you must not is a genuine
+fix someone made here in an emergency and has not yet moved to the Mac. Cherry-pick
+it across first, then reset.
+
+**What a hard reset cannot harm, which is why it is the right default here:**
+everything this deployment actually holds is gitignored and therefore
+untracked — `.env`, `data/sources.tsv`, `cache/seen.json`,
+`cache/fetch_strategy.json`, `cache/trust_tiers.json`, `logs/`, `outbox/`,
+`preview/`, `.venv/`. A reset moves tracked files only. The seen-set, the
+secrets and the archive backlog all survive it untouched.
+
+**The corollary:** because `data/sources.tsv` is untracked, it can never
+arrive by `git pull`. It is scp'd from the Mac and is a static snapshot until
+stage 5b exists. See § 4.
+
 ---
 
 ## 3. Secrets — `.env`
@@ -295,6 +332,7 @@ Exit codes: `0` ok · `1` send failed · `2` bad flag combination ·
 | exit 0 but no email | self-send not surfacing | check icloud.com **and its Junk folder**, not Mail.app |
 | Timer never fires | not enabled, or UTC | `systemctl is-enabled ai-digest.timer`; `timedatectl` |
 | Same digest twice | `commit_seen` off | § 3 |
+| `git pull` → "divergent branches" | something was committed on the Pi | § 2 — check `origin/main..HEAD`, then `git reset --hard origin/main` |
 
 ---
 

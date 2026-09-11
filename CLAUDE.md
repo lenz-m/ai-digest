@@ -965,6 +965,16 @@ Decisions worth not relitigating:
   `data/sources.tsv` is missing, rather than arming a unit that will fail at
   06:00 with nobody watching.
 
+- **The Pi is a READ-ONLY consumer of this repo.** Code is authored on the
+  Mac, pushed, and pulled down; `git pull` on the Pi is always a
+  fast-forward and its tree is always clean. A commit made on the Pi is
+  invisible — headless box, not in the Mac's history, and it surfaces as
+  `fatal: Need to specify how to reconcile divergent branches` mid-deploy.
+  The fix is to discard the Pi's side (`git log --oneline origin/main..HEAD`
+  first, ALWAYS, then `git reset --hard origin/main`), which is safe
+  precisely because everything this deployment holds is gitignored: `.env`,
+  `data/sources.tsv`, `cache/`, `logs/`, `outbox/`. Runbook § 2.
+
 **The clone-and-run trap, worth knowing before debugging a fresh Pi:**
 `.gitignore` carries `data/*` with only `manual_sources.tsv` re-included, so a
 fresh clone has **no `data/sources.tsv`** — and the fallback
