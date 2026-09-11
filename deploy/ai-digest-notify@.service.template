@@ -1,0 +1,39 @@
+[Unit]
+Description=Send a failure alert for %i
+Documentation=https://github.com/lenz-m/ai-digest
+# Alerting needs DNS and a route to smtp.mail.me.com just as the run itself
+# does. If the network is what broke, the breadcrumb at logs/LAST_FAILURE.txt
+# is the fallback -- see rule 2 in notify-failure.py.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__APP_DIR__
+
+# /usr/bin/python3 AND NOT `uv run`, deliberately.
+# The whole value of this unit is that it still works on the day the main
+# pipeline does not. Routing it through uv would make a broken venv, a failed
+# `uv sync` or a missing ~/.local/bin/uv silence the alarm at precisely the
+# moment it is supposed to ring. notify-failure.py is stdlib-only so that
+# stock python3 from the Raspberry Pi OS image is enough.
+#
+# %i is the failed unit's name, handed over by OnFailure=...@%n.service.
+ExecStart=/usr/bin/python3 __APP_DIR__/deploy/notify-failure.py %i
+
+# Same .env, same one-parser rule as ai-digest.service: no EnvironmentFile.
+# notify-failure.py reads .env itself, with the real environment taking
+# precedence, matching python-dotenv's behaviour.
+Environment=LANG=C.UTF-8
+Environment=LC_ALL=C.UTF-8
+Environment=PYTHONUNBUFFERED=1
+
+# Generous enough for SMTP's 45s timeout plus startup, short enough that a
+# hung notifier cannot sit around until the next Monday.
+TimeoutStartSec=300
+
+# No OnFailure= here. A notifier that alerts about its own failure is a loop,
+# and there would be nothing left to deliver the alert with anyway.
+
+NoNewPrivileges=true
+PrivateTmp=true

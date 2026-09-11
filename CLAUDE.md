@@ -973,6 +973,107 @@ fresh clone has **no `data/sources.tsv`** — and the fallback
 Mac, and until stage 5b exists it is a static snapshot that does not track
 Reminders.
 
+## The two silent weeks: batch timeout (settled 2026-09-11)
+
+**Aug 31 and Sep 7 2026 both produced no email, and the cause was neither
+scoring nor billing nor SMTP. Do not re-derive those — they were all checked
+and cleared.** The score batch simply took longer than
+`AI_DIGEST_BATCH_MAX_WAIT` (7200s), `run_batch` raised `BatchTimeoutError`,
+and **nothing caught it**: only `BudgetExceededError` and `FatalAPIError` had
+handlers at the score call, so it unwound out of `main()` and killed the run
+with exit 1.
+
+**The galling part: both batches had SUCCEEDED.** Queried after the fact,
+`msgbatch_01SnQjqS8BLkBgKX5bu3RH7S` (Sep 7) and
+`msgbatch_01FkDkyn2UwGSwNNQexyGDao` (Aug 31) each came back `ended` with all
+**60 requests succeeded**. The work was done, and Anthropic billed for it,
+and the pipeline had already walked away. Batch results persist 29 days —
+they were still retrievable when this was diagnosed.
+
+How it reads in the evidence, so the shape is recognisable next time:
+
+- `logs/run-20260907-060045.log` is **92 KB** against ~20–24 KB for a healthy
+  run, and it is ~95% repeated `status: in_progress` poll lines.
+- The run spans 06:00:45 → 08:25:54 — **exactly 7200s** of polling after
+  fetch and filter.
+- The cost report (from `main()`'s `finally`) reads **"11 call(s), all
+  claude-haiku-4-5, $0.0460"**. Filter only. *Zero Sonnet calls billed to us
+  is the tell* — the score stage never returned a result to cost.
+- **`grep -c ERROR` is 0.** Nothing "failed" in any sense the pipeline has a
+  handler for. The traceback went to stderr, i.e. to the journal.
+- The twelve `401`s in that log are **WSJ paywall fetches**, logged as
+  `WARNING` by `pipeline.fetch`. They are expected and are NOT an auth
+  problem. They cost time to rule out twice now; they are not a lead.
+
+**Why a bigger ceiling is not the fix.** The Batch API's SLA is **24 hours**.
+This is a `Type=oneshot` unit that blocks while polling, bounded by
+`TimeoutStartSec`. No ceiling that fits inside a systemd start timeout can
+cover that SLA, so raising it only relocates the failure.
+
+**What was done instead (2026-09-11): a synchronous fallback.** `run_llm` in
+`run.py` now catches `BatchTimeoutError` and redoes that stage with
+`run_sync`. It sits in the shared dispatcher, not around the score call, so
+the filter stage is covered by the same logic. Consequences to know:
+
+- A fallback week costs roughly **double** (~$1.2): the sync re-run at full
+  price, **plus the abandoned batch, which Anthropic bills anyway**. The
+  abandoned batch does **not** appear in the run's cost report — `CostTracker`
+  only ever sees results that came back — so a fallback run's real spend is
+  higher than it reports. The warning log says so at the time.
+- `TimeoutStartSec` went **10800 → 14400** (3h → 4h). The new worst case is
+  fetch (~25m) + a full 2h of fruitless polling + the whole score stage again
+  in sync (~15m), which was uncomfortably close to 3h. A SIGTERM landing
+  mid-fallback would lose the week a third time, in a new way.
+- **If the fallback fires every week, the batch path is finished** and the
+  answer is the submit/retrieve split (submit Sunday evening, retrieve and
+  send Monday 06:00), not another ceiling. Two units, and pre-score state
+  persisted between them.
+
+**This change is NOT unit-tested**, and that is a known gap rather than an
+oversight: the fallback lives in the `run_llm` closure inside `_run`, which
+takes the whole pipeline's arguments. Making it testable means extracting the
+dispatcher with injected transports — the same `send_fn` pattern
+`deliver.py` already uses and for the same reason. Worth doing. Until then
+the verification is a real `sudo systemctl start ai-digest.service`.
+
+## Failure alerting (built 2026-09-11 — closes known gap #2)
+
+**Both silent weeks were silent because nothing tells you.** systemd recorded
+`exit 1` each time and there was no `OnFailure=`, so the only symptom was an
+absent email — indistinguishable from a quiet week, and unnoticed for a
+fortnight.
+
+`OnFailure=ai-digest-notify@%n.service` on `ai-digest.service`, instantiating
+`deploy/ai-digest-notify@.service.template` → `deploy/notify-failure.py`. The
+alert names the unit, the exit code **and what that exit code means**, and
+carries the last 60 lines of the newest `logs/run-*.log`.
+
+Three properties it is built around, none of them incidental:
+
+1. **Stdlib only, `/usr/bin/python3`, never `uv run`.** A notifier routed
+   through the project's own venv goes quiet exactly when a broken `uv sync`
+   or a missing `~/.local/bin/uv` is the thing you need telling about.
+2. **The breadcrumb is written BEFORE the network is touched.**
+   `logs/LAST_FAILURE.txt` always lands. If SMTP is itself what broke, the
+   alert cannot be emailed and that file is the only record there will be.
+3. **Every `.env` value ≥8 chars is scrubbed from the log tail** before it
+   goes into an email body, plus a regex pass on `sk-ant-…`. Belt and braces
+   over the existing guarantee that `logs/` carries no secret material.
+
+**The blind spot, stated plainly: `OnFailure=` only fires on a non-zero
+exit.** Two paths end a run with **exit 0 and no email**, and neither will
+ever alert — `run.py:318` "nothing new this week" (dedupe left no candidates)
+and `deliver.py` GATE 2 "nothing cleared the bar" (thin week, commits, sends
+nothing). Both became reachable for the first time when `commit_seen` went
+live on 2026-08-26. Closing that needs a positive heartbeat ("a digest was
+sent"), not more failure handling.
+
+**Also learned: `journalctl -u ai-digest` is not a reliable second source on
+this Pi.** It returned `-- No entries --` for the Sep 7 run while
+`logs/run-20260907-060045.log` sat there at 92 KB. journald is not
+persisting; the log files are the record, which is why the notifier quotes
+them rather than the journal.
+
 ## Open items for next session
 
 - **Org rubric broadened (Aug UAT decision):** after the strategy-only +

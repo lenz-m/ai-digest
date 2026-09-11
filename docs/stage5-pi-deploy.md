@@ -287,6 +287,8 @@ Exit codes: `0` ok · `1` send failed · `2` bad flag combination ·
 | Killed ~90s in | `TimeoutStartSec` missing | confirm it is in the installed unit, not just the template |
 | `IngestError` immediately | `data/sources.tsv` absent | § 4 |
 | exit 3 | Anthropic credit or auth | check the balance — this exact failure ate the Aug 20 run |
+| exit 1, huge log of `in_progress` lines, cost report shows ONLY Haiku | score batch outlived `AI_DIGEST_BATCH_MAX_WAIT` | fixed 2026-09-11 — `run_llm` now falls back to sync. If it recurs weekly, move to the submit/retrieve split. Ate Aug 31 **and** Sep 7 |
+| no email, nothing in the journal at all | journald is not persisting on this Pi | read `logs/run-*.log` — that is the record. `logs/LAST_FAILURE.txt` holds the last alert |
 | exit 1, `535` in journal | bad SMTP credentials | app-specific password, not the Apple ID password |
 | exit 1, `550` in journal | `AI_DIGEST_FROM` not owned | § 3 |
 | exit 1, repeated `4xx` | Pi's outbound IP greylisted | the documented iCloud risk; if persistent, fall back to a transactional API rather than re-architecting |
@@ -333,8 +335,15 @@ snapshots for up to 30 days regardless.
    `outbox/Digests/` accumulates vault notes that nothing moves into iCloud.
    The Pi has no route to iCloud Drive — that split is the whole reason for
    this architecture and is not up for relitigation.
-2. **No failure alerting.** A failed run is silent; a missing email is the
-   only symptom. `OnFailure=` with a notifier is the natural next addition.
+2. ~~**No failure alerting.**~~ **CLOSED 2026-09-11** —
+   `OnFailure=ai-digest-notify@%n.service` emails the exit code, what it
+   means, and the tail of the run log, and always writes
+   `logs/LAST_FAILURE.txt` first in case SMTP is what broke. Built because
+   this gap is precisely what let the Aug 31 and Sep 7 failures go unnoticed
+   for two weeks. **Residual blind spot:** `OnFailure=` fires only on a
+   non-zero exit, and two paths end at exit 0 with no email ("nothing new
+   this week", "nothing cleared the bar"). A positive heartbeat is what would
+   cover those.
 3. **The Unicode round trip is still untested.** The note filename starts with
    an emoji and rsyncing non-ASCII names Pi (Linux, NFC) → Mac (APFS) is a
    known duplicate-file source. Verify before trusting the archive half.

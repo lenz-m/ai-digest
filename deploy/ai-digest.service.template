@@ -6,6 +6,13 @@ Documentation=https://github.com/lenz-m/ai-digest
 After=network-online.target
 Wants=network-online.target
 
+# FAILURE ALERTING. Without this, the only symptom of a failed run is that no
+# email arrives -- which is indistinguishable from a quiet week, and which is
+# how the 2026-08-31 and 2026-09-07 failures went unnoticed for a fortnight.
+# %n expands to this unit's own name and is passed through to the notifier so
+# the alert can name what died.
+OnFailure=ai-digest-notify@%n.service
+
 [Service]
 Type=oneshot
 User=__USER__
@@ -22,8 +29,15 @@ WorkingDirectory=__APP_DIR__
 # the default batch path polls for up to AI_DIGEST_BATCH_MAX_WAIT (7200s).
 # systemd's default TimeoutStartSec for Type=oneshot is 90 SECONDS, which
 # would SIGTERM the run mid-poll every single week, with no email and a
-# confusing "timeout" in the journal. 3h leaves headroom over the 2h ceiling.
-TimeoutStartSec=10800
+# confusing "timeout" in the journal.
+#
+# 4h, not the original 3h. Since 2026-09-11 a batch that blows its 2h ceiling
+# no longer ends the run -- run_llm catches BatchTimeoutError and redoes the
+# stage synchronously. So the worst case is now fetch (~25m) + a full 2h of
+# fruitless polling + the whole score stage again in sync (~15m), which came
+# uncomfortably close to 3h. A SIGTERM landing in the middle of the fallback
+# would lose the week for the third time, in a new way.
+TimeoutStartSec=14400
 
 # The vault note filename starts with an emoji (U+1F5DE). Under systemd the
 # locale is C unless told otherwise. PEP 538 coerces C -> C.UTF-8 on modern

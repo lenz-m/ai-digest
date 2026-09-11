@@ -100,16 +100,39 @@ fi
 # ----------------------------------------------------------------- units
 say "Installing systemd units"
 TMP_UNIT="$(mktemp)"
-trap 'rm -f "$TMP_UNIT"' EXIT
-sed -e "s|__USER__|${RUN_USER}|g" \
-    -e "s|__APP_DIR__|${APP_DIR}|g" \
-    -e "s|__UV__|${UV}|g" \
-    "$APP_DIR/deploy/ai-digest.service.template" > "$TMP_UNIT"
+TMP_NOTIFY="$(mktemp)"
+trap 'rm -f "$TMP_UNIT" "$TMP_NOTIFY"' EXIT
 
-sudo install -m 644 "$TMP_UNIT" "$UNIT_DIR/ai-digest.service"
+render() {
+    sed -e "s|__USER__|${RUN_USER}|g" \
+        -e "s|__APP_DIR__|${APP_DIR}|g" \
+        -e "s|__UV__|${UV}|g" \
+        "$1" > "$2"
+}
+
+render "$APP_DIR/deploy/ai-digest.service.template" "$TMP_UNIT"
+# The notifier is an INSTANCE unit (ai-digest-notify@.service). It is never
+# enabled and never started by hand -- OnFailure= in ai-digest.service
+# instantiates it as ai-digest-notify@ai-digest.service when a run fails.
+render "$APP_DIR/deploy/ai-digest-notify@.service.template" "$TMP_NOTIFY"
+
+sudo install -m 644 "$TMP_UNIT"   "$UNIT_DIR/ai-digest.service"
+sudo install -m 644 "$TMP_NOTIFY" "$UNIT_DIR/ai-digest-notify@.service"
 sudo install -m 644 "$APP_DIR/deploy/ai-digest.timer" "$UNIT_DIR/ai-digest.timer"
 sudo systemctl daemon-reload
-ok "units installed to $UNIT_DIR"
+ok "units installed to $UNIT_DIR (including the failure notifier)"
+
+# The alert is emailed, so it needs the same SMTP values the digest uses. If
+# they are missing the notifier still writes logs/LAST_FAILURE.txt, but the
+# alarm stays inside the machine -- which is the problem this is meant to fix.
+if [ "$NEEDS_ENV" -eq 0 ]; then
+    if grep -qE '^(SMTP_USERNAME|SMTP_APP_PASSWORD)=' "$ENV_FILE"; then
+        ok "failure alerts will be emailed (SMTP settings present in .env)"
+    else
+        warn "no SMTP settings in .env -- failure alerts will only be written"
+        warn "to logs/LAST_FAILURE.txt, not emailed."
+    fi
+fi
 
 # -------------------------------------------------------------- timezone
 TZ_NOW="$(timedatectl show -p Timezone --value 2>/dev/null || echo unknown)"

@@ -73,7 +73,7 @@ from pipeline.filter_stage import (
     parse_filter_results,
 )
 from pipeline.ingest import load_sources
-from pipeline.llm_client import run_batch, run_sync
+from pipeline.llm_client import BatchTimeoutError, run_batch, run_sync
 from pipeline.replay import (
     ReplayError,
     RunCounts,
@@ -326,15 +326,63 @@ def _run(args, log_path, prog, cost_tracker: CostTracker) -> int:
 
     def run_llm(requests, system_prompt, model, stage_label):
         """Dispatch to sync or batch transport based on --sync, wiring the
-        right progress line for each. Same return shape either way."""
-        if args.sync:
+        right progress line for each. Same return shape either way.
+
+        THE BATCH-TIMEOUT FALLBACK (added 2026-09-11, after two silent weeks).
+        A batch that does not finish inside AI_DIGEST_BATCH_MAX_WAIT used to
+        raise BatchTimeoutError, which nothing caught: it unwound past
+        deliver(), out of main(), and killed the week. That is what happened
+        on 2026-08-31 and 2026-09-07 -- and in BOTH cases the batch had
+        genuinely succeeded, all 60 requests, just not inside the two-hour
+        ceiling. The work was done and paid for and then thrown away.
+
+        Redoing the stage synchronously costs full price for that stage
+        (~$0.54 on score), and the abandoned batch bills too, so a fallback
+        week runs roughly double. That is the right trade: the batch discount
+        exists to make a ~$33/yr product ~$65/yr, and a missing digest costs
+        more than thirty dollars of anyone's attention. Normal weeks are
+        untouched and still get the 50% off.
+
+        Why not simply a bigger ceiling: the Batch API's SLA is 24 HOURS and
+        this is a Type=oneshot unit that blocks while it polls, capped by
+        TimeoutStartSec. No ceiling that fits inside a systemd start timeout
+        can cover the SLA, so a ceiling alone only moves the failure, it does
+        not remove it. This makes the ceiling mean "stop waiting and get it
+        done another way" instead of "give up".
+
+        The fallback is here in the shared dispatcher rather than around the
+        score call, so the filter stage is covered by the same logic. The
+        filter has never timed out, but it is the same transport and the same
+        failure would be equally fatal.
+        """
+        def _sync_transport():
             def on_prog(done, total):
                 prog.update(f"{stage_label}  calling {done}/{total} (sync)")
             return run_sync(requests, system_prompt, model, cost_tracker, client=client, on_progress=on_prog)
 
+        if args.sync:
+            return _sync_transport()
+
         def on_poll(elapsed, status):
             prog.update(f"{stage_label}  waiting on batch ({len(requests)} req)  {elapsed}s  [{status}]")
-        return run_batch(requests, system_prompt, model, cost_tracker, client=client, on_poll=on_poll)
+        try:
+            return run_batch(requests, system_prompt, model, cost_tracker, client=client, on_poll=on_poll)
+        except BatchTimeoutError as e:
+            # WARNING, not ERROR: the run is about to succeed. But it must be
+            # visible, because the cost report below will NOT account for the
+            # abandoned batch -- Anthropic bills it whether or not we collect
+            # the results, and CostTracker only ever sees what came back.
+            logger.warning(
+                "BATCH TIMED OUT, falling back to synchronous calls for this stage: %s. "
+                "Re-running %d request(s) against %s at full price. NOTE: the abandoned "
+                "batch is still billed by Anthropic and does NOT appear in this run's "
+                "cost report, so the real spend for this run is higher than reported. "
+                "If this fires every week, the batch path is no longer fit for purpose "
+                "and the submit/retrieve split is the answer, not a bigger ceiling.",
+                e, len(requests), model,
+            )
+            prog.update(f"{stage_label}  batch timed out -- retrying synchronously")
+            return _sync_transport()
 
     # --- filter ---
     filter_requests = build_filter_requests(new_candidates)
