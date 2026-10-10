@@ -5,6 +5,25 @@ Obsidian vault archive (secondary). Full design rationale was worked out in
 chat before any code — see the summary below for the decisions that matter
 for future changes.
 
+## Git workflow: branches and pull requests (from October 2026)
+
+**`main` is live.** Once the home server migration is done, every push to
+`main` is deployed automatically: the server pulls, builds, runs this repo's
+test suite, and puts the new version live only if the tests pass (rolling back
+if its health check then fails). See `~/projects/homeserver/PLAN.md` §5.
+
+So, for any change made with Claude Code:
+- **Never commit or push directly to `main`.** Work on a branch named
+  `claude/<short-description>`, push it, and open a pull request
+  (`gh pr create`). The user reviews and merges; merging is deploying.
+- Run the full test suite before opening the PR and say in the PR whether it
+  passed.
+- **Tests never touch real data.** They use temporary directories and
+  fixtures, never the live database or data folders, and never write into
+  folders the app uses for real data.
+- Until the cutover from the Pi, `deploy/bootstrap-pi.sh` is still how
+  changes reach the Pi; after it, the Pi deploy files are retired.
+
 ## Architecture (decided, don't relitigate)
 
 - **Raspberry Pi** (always on) runs the actual pipeline: fetch → dedupe →
